@@ -11,25 +11,21 @@ export default function Navbar({ user, onLogout, onOpenProfile }) {
       {/* Container Header Menyatu Tanpa Bar Putih Kaku */}
       <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-3 flex items-center justify-between">
         
-        {/* Tombol Keluar */}
-        <button
-          type="button"
-          onClick={onLogout}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/60 hover:bg-[#014181] hover:text-white border border-slate-200/80 text-slate-600 transition-all duration-200 backdrop-blur-md shadow-sm active:scale-95"
-          title="Keluar"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-          </svg>
-          <span className="text-xs font-semibold hidden sm:inline">Keluar</span>
-        </button>
+        {/* Logo Bank BRI Pill */}
+        <div className="flex items-center justify-center h-12 sm:h-13 px-2 sm:px-3 rounded-full border border-slate-200/90 bg-white shadow-sm hover:shadow-md transition-all">
+          <img
+            src="/Img/logo-bri.jpg"
+            alt="Bank BRI"
+            className="h-7 sm:h-9 w-auto object-contain mix-blend-multiply"
+          />
+        </div>
 
         {/* Profil Dropdown Pill */}
         <div className="relative">
           <button
             type="button"
-            className="flex items-center gap-2 sm:gap-3 p-1 pr-3 rounded-full border border-slate-200/80 bg-white/70 hover:bg-white backdrop-blur-md transition-all shadow-sm active:scale-95"
-            onClick={() => setProfileOpen((open) => !open)}
+            className="flex items-center h-12 sm:h-13 gap-2 sm:gap-3 p-3 pr-5 rounded-full border border-slate-200/80 bg-white/70 hover:bg-white backdrop-blur-md transition-all shadow-sm active:scale-95"
+             onClick={() => setProfileOpen((open) => !open)}
             aria-expanded={profileOpen}
           >
             <span className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#014181] text-white text-xs font-bold ring-2 ring-[#FF7401]/40 overflow-hidden shrink-0">

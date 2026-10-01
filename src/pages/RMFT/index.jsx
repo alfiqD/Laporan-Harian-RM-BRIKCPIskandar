@@ -6,7 +6,7 @@ export default function RMFT({ user, onBack }) {
       user={user}
       onBack={onBack}
       formType="rmft"
-      title="Relation Manager Finding & Transaksi (RMFT)"
+      title="Relationship Manager Funding & Transaksi (RMFT)"
       transactionLabel="Jenis Transaksi"
       transactionOptions={[
         'Pembukaan rekening',
