@@ -20,15 +20,40 @@ export default function ProfileModal({ user, onClose, onSave }) {
       setMessage('Pilih file gambar untuk foto profil.');
       return;
     }
-    if (file.size > 2 * 1024 * 1024) {
-      setMessage('Ukuran foto maksimal 2 MB.');
+    if (file.size > 5 * 1024 * 1024) {
+      setMessage('Ukuran foto maksimal 5 MB.');
       return;
     }
 
     const reader = new FileReader();
     reader.onload = () => {
-      setPhoto(String(reader.result));
-      setMessage('');
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 320;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL('image/jpeg', 0.85);
+        setPhoto(compressed);
+        setMessage('');
+      };
+      img.onerror = () => setMessage('Gagal memproses gambar. Coba file lain.');
+      img.src = String(reader.result);
     };
     reader.onerror = () => setMessage('Foto tidak dapat dibaca. Coba file lain.');
     reader.readAsDataURL(file);

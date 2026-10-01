@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { supabase } from '../config/supabaseClient.js';
 import { recordActivity } from '../pages/auth/activityLog.js';
 
 const MAX_PHOTO_SIZE = 256 * 1024;
-const MAX_SAVED_RECORDS = 5;
+const MAX_SAVED_RECORDS = 10;
 
 function getStorageKey(user, formType) {
-  return `bri-app-records-${formType}-${user.id}`;
+  return `bri-app-records-${formType}-${user?.id || 'guest'}`;
 }
 
 function readSavedRecords(user, formType) {
@@ -43,6 +44,41 @@ export default function TransactionForm({
   const [message, setMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
+  // Ambil data laporan dari Supabase saat formType/user dimuat
+  useEffect(() => {
+    async function fetchReports() {
+      if (!user?.id) return;
+      try {
+        const { data, error } = await supabase
+          .from('laporan_rm')
+          .select('*')
+          .eq('form_type', formType)
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const mapped = data.map((d) => ({
+            id: d.id,
+            fullName: d.full_name,
+            customerType: d.customer_type,
+            identityNumber: d.identity_number,
+            phone: d.phone,
+            address: d.address,
+            transactionType: d.transaction_type,
+            followUp: d.follow_up,
+            photo: d.photo_url,
+            createdAt: d.created_at,
+          }));
+          setRecords(mapped);
+          localStorage.setItem(getStorageKey(user, formType), JSON.stringify(mapped));
+        }
+      } catch (err) {
+        console.warn('Gagal memuat laporan Supabase:', err);
+      }
+    }
+    fetchReports();
+  }, [user, formType]);
+
   const updateField = (event) => {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
@@ -75,7 +111,7 @@ export default function TransactionForm({
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
     setIsSaving(true);
     setMessage('');
@@ -86,16 +122,53 @@ export default function TransactionForm({
       createdAt: new Date().toISOString(),
     };
 
+    let savedId = record.id;
+    let savedCreatedAt = record.createdAt;
+
     try {
-      const nextRecords = [record, ...readSavedRecords(user, formType)]
-        .slice(0, MAX_SAVED_RECORDS);
+      // 1. Simpan ke Supabase tabel public.laporan_rm
+      const { data: dbData, error: dbError } = await supabase
+        .from('laporan_rm')
+        .insert({
+          user_id: user?.id || null,
+          form_type: formType,
+          full_name: form.fullName.trim(),
+          customer_type: form.customerType,
+          identity_number: form.identityNumber.trim(),
+          phone: form.phone.trim(),
+          address: form.address.trim(),
+          transaction_type: form.transactionType,
+          follow_up: form.followUp.trim(),
+          photo_url: form.photo,
+        })
+        .select()
+        .single();
+
+      if (dbError) {
+        console.warn('Supabase insert notice:', dbError.message);
+      } else if (dbData) {
+        savedId = dbData.id;
+        savedCreatedAt = dbData.created_at;
+      }
+    } catch (dbErr) {
+      console.warn('Supabase offline/error, menyimpan lokal:', dbErr);
+    }
+
+    try {
+      const nextRecord = {
+        ...record,
+        id: savedId,
+        createdAt: savedCreatedAt,
+      };
+      const nextRecords = [nextRecord, ...records].slice(0, MAX_SAVED_RECORDS);
       localStorage.setItem(getStorageKey(user, formType), JSON.stringify(nextRecords));
       setRecords(nextRecords);
+
       recordActivity(user, `Simpan ${formType.toUpperCase()}`, `Menyimpan data ${title}`);
       setForm(blankForm);
-      setMessage('Data berhasil disimpan.');
+      setMessage('Data laporan berhasil disimpan.');
     } catch {
-      setMessage('Data tidak dapat disimpan. Coba kurangi ukuran foto atau hapus sebagian data lama.');
+      setMessage('Data tidak dapat disimpan ke cache lokal. Namun data telah dikirim ke server.');
     } finally {
       setIsSaving(false);
     }

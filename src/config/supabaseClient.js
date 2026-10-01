@@ -1,9 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
-// 1. Ini Project URL kamu
-const supabaseUrl = 'https://xmfwjwmjavebmamznylg.supabase.co'
+const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+const rawUrl = env.VITE_SUPABASE_URL || 'https://oramwfvsxnrkhnvkpgwi.supabase.co';
+const supabaseUrl = rawUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_LF3dnAi1k2Plddy4uIjELQ_oznGGMPy';
 
-// 2. Ini API Key yang baru saja kamu copy
-const supabaseAnonKey = 'sb_publishable_3W7s8mg9AOZ9C9Mwbnr3hA_wYLFSm5T'
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)

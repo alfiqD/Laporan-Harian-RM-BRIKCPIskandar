@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Navbar from '../components/Navbar.jsx'; // Sesuaikan path lokasi Navbar.jsx
 import ProfileModal from '../components/ProfileModal.jsx';
 import {
+  fetchActivitiesFromSupabase,
   formatActivityTime,
   getUserActivities,
   recordActivity,
@@ -11,7 +12,13 @@ import {
 const rmftImage = '/Img/rmft.png';
 const reportImage = '/Img/tampilan-laporan.png';
 
-const chartValues = [65, 52, 80, 45, 60, 35, 50, 68, 85, 70, 92, 78];
+const yearlyChartData = {
+  2026: [65, 58, 82, 70, 85, 90, 75, 88, 92, 80, 95, 89],
+  2025: [65, 52, 80, 45, 60, 35, 50, 68, 85, 70, 92, 78],
+  2024: [50, 42, 65, 55, 48, 62, 70, 60, 75, 68, 74, 80],
+  2023: [40, 35, 50, 48, 55, 42, 45, 52, 60, 58, 65, 70],
+};
+const availableYears = [2026, 2025, 2024, 2023];
 
 const menuItems = [
   { label: 'RMFT', image: rmftImage, page: 'rmft', tag: 'Funding' },
@@ -23,9 +30,18 @@ export default function Home({ user, onLogout, onUpdateUser, onNavigate }) {
   const [showProfile, setShowProfile] = useState(false);
   const [notice, setNotice] = useState('');
   const [activities, setActivities] = useState(() => getUserActivities(user));
+  const [selectedYear, setSelectedYear] = useState(2026);
+  const [yearDropdownOpen, setYearDropdownOpen] = useState(false);
 
   useEffect(() => {
-    return subscribeToActivities(() => setActivities(getUserActivities(user)));
+    fetchActivitiesFromSupabase(user).then((acts) => {
+      if (acts && acts.length > 0) setActivities(acts);
+    });
+
+    return subscribeToActivities(user, async () => {
+      const acts = await fetchActivitiesFromSupabase(user);
+      setActivities(acts);
+    });
   }, [user]);
 
   useEffect(() => {
@@ -49,6 +65,8 @@ export default function Home({ user, onLogout, onUpdateUser, onNavigate }) {
     recordActivity(user, 'Logout', `${user.name} keluar dari aplikasi`);
     onLogout();
   };
+
+  const currentChartValues = yearlyChartData[selectedYear] || yearlyChartData[2026];
 
   return (
     /* Background Utama: Gradasi Soft Slate Blue dengan Ambient Glow BRI */
@@ -146,21 +164,67 @@ export default function Home({ user, onLogout, onUpdateUser, onNavigate }) {
                 <span className="w-2.5 h-2.5 rounded-sm bg-[#FF7401]" />
                 Aktivitas Bulanan
               </h2>
-              <p className="text-[10px] sm:text-xs text-slate-400">Rekapitulasi kunjungan 2025</p>
+              <p className="text-[10px] sm:text-xs text-slate-400">
+                Rekapitulasi kunjungan {selectedYear}
+              </p>
             </div>
-            <span className="px-2.5 py-1 bg-slate-100/80 text-[#014181] text-[10px] sm:text-xs font-bold rounded-lg">
-              2025
-            </span>
+
+            {/* Pemilih Tahun Interaktif */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setYearDropdownOpen((open) => !open)}
+                className="inline-flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-slate-50 text-[#014181] text-[11px] sm:text-xs font-bold rounded-xl border border-slate-200/90 shadow-sm transition-all active:scale-95 cursor-pointer"
+                aria-haspopup="true"
+                aria-expanded={yearDropdownOpen}
+              >
+                <span>{selectedYear}</span>
+                <svg
+                  className={`w-3.5 h-3.5 text-[#014181] transition-transform duration-200 ${yearDropdownOpen ? 'rotate-180 text-[#FF7401]' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {yearDropdownOpen && (
+                <div className="absolute right-0 mt-1.5 w-28 bg-white/95 backdrop-blur-xl rounded-xl shadow-lg border border-slate-100 py-1 z-30 animate-in fade-in zoom-in-95 duration-150">
+                  {availableYears.map((yr) => (
+                    <button
+                      key={yr}
+                      type="button"
+                      onClick={() => {
+                        setSelectedYear(yr);
+                        setYearDropdownOpen(false);
+                        setNotice(`Tahun ${yr} dipilih`);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-xs font-bold flex items-center justify-between transition-colors ${
+                        selectedYear === yr
+                          ? 'bg-[#014181]/10 text-[#014181]'
+                          : 'text-slate-600 hover:bg-slate-50 hover:text-[#014181]'
+                      }`}
+                    >
+                      <span>{yr}</span>
+                      {selectedYear === yr && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#FF7401]" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="h-32 sm:h-40 flex items-end justify-between gap-1 sm:gap-2 pt-2">
-            {chartValues.map((value, index) => (
+            {currentChartValues.map((value, index) => (
               <div
-                key={`${value}-${index}`}
-                className="w-full bg-[#014181]/15 hover:bg-[#FF7401] rounded-t-md sm:rounded-t-lg transition-all duration-200 relative group cursor-pointer"
+                key={`${selectedYear}-${index}-${value}`}
+                className="w-full bg-[#014181]/15 hover:bg-[#FF7401] rounded-t-md sm:rounded-t-lg transition-all duration-300 relative group cursor-pointer"
                 style={{ height: `${value}%` }}
               >
-                <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-[#014181] text-white text-[9px] font-bold px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-[#014181] text-white text-[9px] font-bold px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-sm">
                   {value}
                 </div>
               </div>
@@ -173,31 +237,36 @@ export default function Home({ user, onLogout, onUpdateUser, onNavigate }) {
           </div>
         </section>
 
-        {/* Riwayat Aktivitas */}
+        {/* Riwayat Aktivitas - Scrollable */}
         <section className="bg-white/80 backdrop-blur-md rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/70">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-xs sm:text-sm font-bold text-[#014181]">Riwayat Aktivitas</h2>
-              <p className="text-[10px] sm:text-xs text-slate-400">Aktivitas sistem terbaru</p>
+              <p className="text-[10px] sm:text-xs text-slate-400">
+                {activities.length > 0 ? `${activities.length} aktivitas tercatat` : 'Aktivitas sistem terbaru'}
+              </p>
             </div>
             <button
               type="button"
-              className="px-2.5 py-1 text-[11px] font-bold text-[#014181] bg-slate-50 border border-slate-200 rounded-lg hover:bg-[#014181] hover:text-white transition-all"
-              onClick={() => {
+              className="px-2.5 py-1 text-[11px] font-bold text-[#014181] bg-slate-50 border border-slate-200 rounded-lg hover:bg-[#014181] hover:text-white transition-all active:scale-95 cursor-pointer"
+              onClick={async () => {
+                setNotice('Memperbarui riwayat...');
+                const acts = await fetchActivitiesFromSupabase(user);
+                setActivities(acts);
                 setNotice('Riwayat diperbarui');
-                recordActivity(user, 'Melihat riwayat', 'Melihat daftar riwayat aktivitas');
+                recordActivity(user, 'Refresh riwayat', 'Memperbarui daftar aktivitas');
               }}
             >
-              Lihat Semua
+              Refresh
             </button>
           </div>
 
           {activities.length > 0 ? (
-            <div className="space-y-2.5">
-              {activities.slice(0, 6).map((activity) => (
+            <div className="space-y-2.5 max-h-64 sm:max-h-72 overflow-y-auto pr-1.5 custom-scrollbar">
+              {activities.map((activity) => (
                 <div
                   key={activity.id}
-                  className="flex items-center justify-between p-2.5 sm:p-3 rounded-xl bg-slate-50/80 border border-slate-100"
+                  className="flex items-center justify-between p-2.5 sm:p-3 rounded-xl bg-slate-50/80 border border-slate-100 hover:bg-slate-100/70 transition-colors"
                 >
                   <div className="flex items-center gap-2.5 min-w-0 pr-2">
                     <div className="w-2 h-2 rounded-full bg-[#FF7401] shrink-0" />

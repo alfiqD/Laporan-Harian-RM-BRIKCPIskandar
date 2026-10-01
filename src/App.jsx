@@ -81,6 +81,7 @@ export default function App() {
       onUpdateUser={(updatedUser) => {
         saveAuthSession(updatedUser);
         setCurrentUser(updatedUser);
+        return updatedUser;
       }}
       onLogout={() => {
         clearAuthSession();

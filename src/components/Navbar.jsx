@@ -32,12 +32,20 @@ export default function Navbar({ user, onLogout, onOpenProfile }) {
             onClick={() => setProfileOpen((open) => !open)}
             aria-expanded={profileOpen}
           >
-            <span className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#014181] text-white text-xs font-bold ring-2 ring-[#FF7401]/40">
-              {user.name.slice(0, 2).toUpperCase()}
+            <span className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#014181] text-white text-xs font-bold ring-2 ring-[#FF7401]/40 overflow-hidden shrink-0">
+              {user?.photo ? (
+                <img
+                  src={user.photo}
+                  alt={user?.name || 'Foto Profil'}
+                  className="w-full h-full object-cover rounded-full"
+                />
+              ) : (
+                user?.name?.slice(0, 2).toUpperCase() || 'RM'
+              )}
             </span>
             <div className="flex flex-col items-start text-left">
               <span className="text-xs font-bold text-[#014181] leading-tight max-w-[110px] sm:max-w-none truncate">
-                {user.name}
+                {user?.name || 'Insan BRILiaN'}
               </span>
               <span className="text-[10px] font-semibold text-[#FF7401]">
                 Insan BRILiaN
@@ -50,7 +58,25 @@ export default function Navbar({ user, onLogout, onOpenProfile }) {
 
           {/* Menu Dropdown Profil */}
           {profileOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-slate-100 py-1.5 z-40">
+            <div className="absolute right-0 mt-2 w-52 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-slate-100 py-1.5 z-40">
+              <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2.5">
+                <span className="flex items-center justify-center w-8 h-8 rounded-full bg-[#014181] text-white text-xs font-bold ring-2 ring-[#FF7401]/40 overflow-hidden shrink-0">
+                  {user?.photo ? (
+                    <img
+                      src={user.photo}
+                      alt={user?.name || 'Foto'}
+                      className="w-full h-full object-cover rounded-full"
+                    />
+                  ) : (
+                    user?.name?.slice(0, 2).toUpperCase() || 'RM'
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-[#014181] truncate">{user?.name}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{user?.jobTitle || 'Relationship Manager'}</p>
+                </div>
+              </div>
+
               <button
                 type="button"
                 className="w-full text-left px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-[#014181] flex items-center gap-2"
