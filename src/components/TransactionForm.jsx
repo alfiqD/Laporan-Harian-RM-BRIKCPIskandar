@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { recordActivity } from '../auth/activityLog.js';
-import './transaction-form.css';
+import { recordActivity } from '../pages/auth/activityLog.js';
 
 const MAX_PHOTO_SIZE = 256 * 1024;
 const MAX_SAVED_RECORDS = 5;

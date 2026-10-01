@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { recordActivity } from '../auth/activityLog.js';
-import { updateUserProfile } from '../auth/localAuth.js';
+import { recordActivity } from '../pages/auth/activityLog.js';
+import { updateUserProfile } from '../pages/auth/localAuth.js';
 
 export default function ProfileModal({ user, onClose, onSave }) {
   const [isEditing, setIsEditing] = useState(false);

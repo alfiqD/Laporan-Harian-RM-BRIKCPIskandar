@@ -1,52 +1,37 @@
-import { useState } from 'react';
-import './Auth.css';
-
-import mascotImg from './assets/maskot.png';
-import briLogo from './assets/bri-logo.png';
-import Login from './auth/login.jsx';
+import React, { Suspense, useState } from 'react';
+import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import {
   clearAuthSession,
   loadAuthSession,
   saveAuthSession,
-} from './auth/localAuth.js';
-import Registrasi from './auth/registrasi.jsx';
-import Home from './pages/home.jsx';
-import RMFT from './pages/RMFT/index.jsx';
-import RMKREDIT from './pages/RMKREDIT/index.jsx';
+} from './pages/auth/localAuth.js';
 
-export default function App() {
-  const [isLogin, setIsLogin] = useState(true);
-  const [currentUser, setCurrentUser] = useState(loadAuthSession);
-  const [activePage, setActivePage] = useState('home');
-  const [registeredEmail, setRegisteredEmail] = useState('');
-  const [registrationNotice, setRegistrationNotice] = useState('');
+const Login = React.lazy(() => import('./pages/auth/login.jsx'));
+const Registrasi = React.lazy(() => import('./pages/auth/registrasi.jsx'));
+const Home = React.lazy(() => import('./pages/home.jsx'));
+const RMFT = React.lazy(() => import('./pages/RMFT/index.jsx'));
+const RMKREDIT = React.lazy(() => import('./pages/RMKREDIT/index.jsx'));
+const loadingFallback = (
+  <div
+    className="grid min-h-screen place-items-center text-sm text-slate-600"
+    role="status"
+  >
+    Memuat halaman...
+  </div>
+);
 
-  if (currentUser) {
-    const pageProps = {
-      user: currentUser,
-      onBack: () => setActivePage('home'),
-    };
+const mascotImg = '/Img/maskot.png';
+const briLogo = '/Img/bri-logo.png';
 
-    if (activePage === 'rmft') return <RMFT {...pageProps} />;
-    if (activePage === 'rmkredit') return <RMKREDIT {...pageProps} />;
-
-    return (
-      <Home
-        user={currentUser}
-        onNavigate={setActivePage}
-        onUpdateUser={(updatedUser) => {
-          saveAuthSession(updatedUser);
-          setCurrentUser(updatedUser);
-        }}
-        onLogout={() => {
-          clearAuthSession();
-          setCurrentUser(null);
-          setActivePage('home');
-        }}
-      />
-    );
-  }
-
+function AuthPage({
+  isLogin,
+  onLogin,
+  onRegister,
+  onShowLogin,
+  onRegistered,
+  registeredEmail,
+  registrationNotice,
+}) {
   return (
     <main className="auth-wrapper">
       <section className="glass-outer-card" aria-label="Autentikasi BRI">
@@ -69,19 +54,70 @@ export default function App() {
             <Login
               initialEmail={registeredEmail}
               initialMessage={registrationNotice}
+              onLogin={onLogin}
+              onRegister={onRegister}
+            />
+          ) : (
+            <Registrasi onLogin={onShowLogin} onRegistered={onRegistered} />
+          )}
+          <p className="security-note">Koneksi aman untuk kenyamanan Anda</p>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+export default function App() {
+  const navigate = useNavigate();
+  const [isLogin, setIsLogin] = useState(true);
+  const [currentUser, setCurrentUser] = useState(loadAuthSession);
+  const [registeredEmail, setRegisteredEmail] = useState('');
+  const [registrationNotice, setRegistrationNotice] = useState('');
+
+  const homePage = currentUser ? (
+    <Home
+      user={currentUser}
+      onNavigate={(page) => navigate(`/${page}`)}
+      onUpdateUser={(updatedUser) => {
+        saveAuthSession(updatedUser);
+        setCurrentUser(updatedUser);
+      }}
+      onLogout={() => {
+        clearAuthSession();
+        setCurrentUser(null);
+        navigate('/login', { replace: true });
+      }}
+    />
+  ) : (
+    <Navigate to="/login" replace />
+  );
+
+  return (
+    <Suspense fallback={loadingFallback}>
+      <Routes>
+        <Route
+          path="/"
+          element={homePage}
+        />
+        <Route
+          path="/login"
+          element={currentUser ? (
+            <Navigate to="/" replace />
+          ) : (
+            <AuthPage
+              isLogin={isLogin}
+              registeredEmail={registeredEmail}
+              registrationNotice={registrationNotice}
               onLogin={(user) => {
                 saveAuthSession(user);
                 setCurrentUser(user);
-                setActivePage('home');
+                navigate('/', { replace: true });
               }}
               onRegister={() => {
                 setRegistrationNotice('');
                 setIsLogin(false);
               }}
-            />
-          ) : (
-            <Registrasi
-              onLogin={() => setIsLogin(true)}
+              onShowLogin={() => setIsLogin(true)}
               onRegistered={(user) => {
                 setRegisteredEmail(user.email);
                 setRegistrationNotice('Registrasi berhasil. Silakan masuk dengan akun baru Anda.');
@@ -89,9 +125,28 @@ export default function App() {
               }}
             />
           )}
-          <p className="security-note">Koneksi aman untuk kenyamanan Anda</p>
-        </section>
-      </section>
-    </main>
+        />
+        <Route
+          path="/rmft"
+          element={currentUser ? (
+            <RMFT user={currentUser} onBack={() => navigate('/')} />
+          ) : (
+            <Navigate to="/login" replace />
+          )}
+        />
+        <Route
+          path="/rmkredit"
+          element={currentUser ? (
+            <RMKREDIT user={currentUser} onBack={() => navigate('/')} />
+          ) : (
+            <Navigate to="/login" replace />
+          )}
+        />
+        <Route
+          path="*"
+          element={<Navigate to={currentUser ? '/' : '/login'} replace />}
+        />
+      </Routes>
+    </Suspense>
   );
 }

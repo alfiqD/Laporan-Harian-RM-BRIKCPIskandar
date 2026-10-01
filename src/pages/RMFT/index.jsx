@@ -1,4 +1,4 @@
-import TransactionForm from '../TransactionForm.jsx';
+import TransactionForm from '../../components/TransactionForm.jsx';
 
 export default function RMFT({ user, onBack }) {
   return (
