@@ -1,8 +1,11 @@
 import { supabase } from '../../config/supabaseClient.js';
+import { DEFAULT_ROLE } from '../../config/rolesConfig.jsx';
 
 const USERS_STORAGE_KEY = 'bri-app-users-v1';
 const SESSION_STORAGE_KEY = 'bri-app-session-v1';
+const LEGACY_SESSION_STORAGE_KEY = 'bri-app-session-v1';
 const PASSWORD_HASH_ITERATIONS = 120000;
+const SESSION_INACTIVITY_LIMIT = 4 * 24 * 60 * 60 * 1000;
 
 function readUsers() {
   try {
@@ -59,7 +62,7 @@ function toPublicUser(user) {
     name: user.name,
     email: user.email,
     jobTitle: user.jobTitle || user.job_title || 'Relationship Manager',
-    role: user.role || 'Admin',
+    role: user.role || DEFAULT_ROLE,
     photo: user.photo || user.photo_url || '',
   };
 }
@@ -95,7 +98,7 @@ export async function registerUser({ name, email, password }) {
         name: name.trim(),
         email: normalizedEmail,
         jobTitle: 'Relationship Manager',
-        role: 'Admin',
+        role: DEFAULT_ROLE,
         photo: '',
       };
 
@@ -105,7 +108,7 @@ export async function registerUser({ name, email, password }) {
           id: data.user.id,
           name: name.trim(),
           email: normalizedEmail,
-          role: 'Admin',
+          role: DEFAULT_ROLE,
           job_title: 'Relationship Manager',
           updated_at: new Date().toISOString(),
         });
@@ -130,7 +133,7 @@ export async function registerUser({ name, email, password }) {
       console.warn('Menggunakan fallback pendaftaran lokal karena koneksi Supabase bermasalah.');
       const users = readUsers();
       if (users.some((user) => user.email === normalizedEmail)) {
-        throw new Error('Email ini sudah terdaftar. Silakan masuk.');
+        throw new Error('Email ini sudah terdaftar. Silakan masuk.', { cause: supabaseError });
       }
 
       const saltBytes = crypto.getRandomValues(new Uint8Array(16));
@@ -141,7 +144,7 @@ export async function registerUser({ name, email, password }) {
         name: name.trim(),
         email: normalizedEmail,
         jobTitle: 'Relationship Manager',
-        role: 'Admin',
+        role: DEFAULT_ROLE,
         photo: '',
         salt,
         passwordHash,
@@ -151,7 +154,9 @@ export async function registerUser({ name, email, password }) {
       return toPublicUser(localUser);
     }
 
-    throw new Error(supabaseError.message || 'Registrasi gagal. Silakan coba lagi.');
+    throw new Error(supabaseError.message || 'Registrasi gagal. Silakan coba lagi.', {
+      cause: supabaseError,
+    });
   }
 }
 
@@ -178,7 +183,7 @@ export async function authenticateUser({ email, password }) {
         name: profile?.name || data.user.user_metadata?.name || 'Insan BRILiaN',
         email: data.user.email,
         jobTitle: profile?.job_title || 'Relationship Manager',
-        role: profile?.role || 'Admin',
+        role: profile?.role || DEFAULT_ROLE,
         photo: profile?.photo_url || '',
       };
 
@@ -269,19 +274,64 @@ export async function updateUserProfile(currentUser, changes) {
 }
 
 export function saveAuthSession(user) {
-  sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(user));
+  localStorage.setItem(
+    SESSION_STORAGE_KEY,
+    JSON.stringify({ user, lastActiveAt: Date.now() }),
+  );
 }
 
 export function loadAuthSession() {
   try {
-    const user = JSON.parse(sessionStorage.getItem(SESSION_STORAGE_KEY) || 'null');
-    return user?.name && user?.email ? user : null;
+    const storedSession = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (storedSession) {
+      const session = JSON.parse(storedSession);
+      const user = session.user || session;
+      const lastActiveAt = session.lastActiveAt || Date.now();
+      if (Date.now() - lastActiveAt >= SESSION_INACTIVITY_LIMIT) {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
+      saveAuthSession(user);
+      return user?.name && user?.email ? user : null;
+    }
+
+    const legacyUser = JSON.parse(sessionStorage.getItem(LEGACY_SESSION_STORAGE_KEY) || 'null');
+    if (legacyUser?.name && legacyUser?.email) {
+      saveAuthSession(legacyUser);
+      sessionStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+      return legacyUser;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
+export function touchAuthSession() {
+  try {
+    const session = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+    if (!session?.user) return false;
+
+    const now = Date.now();
+    const lastActiveAt = session.lastActiveAt || now;
+    if (now - lastActiveAt >= SESSION_INACTIVITY_LIMIT) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return false;
+    }
+
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ ...session, lastActiveAt: now }),
+    );
+    return true;
+  } catch {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    return false;
+  }
+}
+
 export async function clearAuthSession() {
+  localStorage.removeItem(SESSION_STORAGE_KEY);
   sessionStorage.removeItem(SESSION_STORAGE_KEY);
   try {
     await supabase.auth.signOut();

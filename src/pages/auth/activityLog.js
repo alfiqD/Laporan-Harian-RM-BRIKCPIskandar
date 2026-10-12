@@ -24,6 +24,40 @@ export function getUserActivities(user) {
     .sort((first, second) => new Date(second.timestamp) - new Date(first.timestamp));
 }
 
+export async function fetchAllActivitiesFromSupabase() {
+  try {
+    const { data, error } = await supabase
+      .from('aktivitas_log')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) {
+      console.warn('Gagal memuat seluruh aktivitas dari Supabase:', error.message);
+      return readAllActivities()
+        .sort((first, second) => new Date(second.timestamp) - new Date(first.timestamp))
+        .slice(0, 100);
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+      return data.map((item) => ({
+        id: item.id,
+        userKey: item.user_id,
+        userName: item.user_name || 'Pegawai',
+        action: item.action,
+        detail: item.detail,
+        timestamp: item.created_at,
+      }));
+    }
+  } catch (err) {
+    console.warn('Gagal memuat seluruh aktivitas dari Supabase:', err);
+  }
+
+  return readAllActivities()
+    .sort((first, second) => new Date(second.timestamp) - new Date(first.timestamp))
+    .slice(0, 100);
+}
+
 export async function fetchActivitiesFromSupabase(user) {
   if (!user?.id) return getUserActivities(user);
 
@@ -111,16 +145,17 @@ export function subscribeToActivities(userOrCb, maybeCb) {
   // Subscribe ke real-time Supabase jika didukung
   let channel = null;
   if (user?.id) {
+    const isAdmin = user.role?.toLowerCase() === 'admin';
     try {
       channel = supabase
-        .channel(`public:aktivitas_log:${user.id}`)
+        .channel(isAdmin ? 'public:aktivitas_log:admin' : `public:aktivitas_log:${user.id}`)
         .on(
           'postgres_changes',
           {
             event: 'INSERT',
             schema: 'public',
             table: 'aktivitas_log',
-            filter: `user_id=eq.${user.id}`,
+            ...(isAdmin ? {} : { filter: `user_id=eq.${user.id}` }),
           },
           () => {
             onUpdate();

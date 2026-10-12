@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient.js';
 import { recordActivity } from '../pages/auth/activityLog.js';
+import { isAdminRole } from '../config/rolesConfig.jsx';
+import Icon from './Icon.jsx';
 
 const MAX_SAVED_RECORDS = 50;
 
@@ -11,7 +13,9 @@ function getStorageKey(user, formType) {
 function readSavedRecords(user, formType) {
   try {
     const records = JSON.parse(localStorage.getItem(getStorageKey(user, formType)) || '[]');
-    return Array.isArray(records) ? records : [];
+    return Array.isArray(records)
+      ? records.map((record) => ({ ...record, userId: record.userId || user?.id }))
+      : [];
   } catch {
     return [];
   }
@@ -37,11 +41,15 @@ export default function TransactionForm({
   transactionLabel,
   transactionOptions,
 }) {
+  const isAllReports = isAdminRole(user?.role)
+    && new URLSearchParams(window.location.search).get('scope') === 'all';
   // View mode: 'form' (input formulir) atau 'reports' (halaman kartu laporan)
-  const [viewMode, setViewMode] = useState('form');
+  const [viewMode, setViewMode] = useState(
+    new URLSearchParams(window.location.search).get('view') === 'reports' ? 'reports' : 'form',
+  );
 
   const [form, setForm] = useState(blankForm);
-  const [records, setRecords] = useState(() => readSavedRecords(user, formType));
+  const [records, setRecords] = useState(() => readSavedRecords(user, isAllReports ? 'all' : formType));
   const [selectedDetailRecord, setSelectedDetailRecord] = useState(null);
   const [editingRecord, setEditingRecord] = useState(null);
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -50,25 +58,63 @@ export default function TransactionForm({
   const [isEditingSaving, setIsEditingSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [reportTypeFilter, setReportTypeFilter] = useState('ALL');
   const [copiedId, setCopiedId] = useState(false);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
+  const [reportsLoadError, setReportsLoadError] = useState('');
 
   const isRMFT = formType === 'rmft';
+  const editingIsRMFT = (editingRecord?.formType || formType) === 'rmft';
+  const editingTransactionLabel = editingIsRMFT ? 'Jenis Transaksi' : 'Jenis Layanan Kredit';
+  const editingTransactionOptions = editingIsRMFT
+    ? ['Pembukaan rekening', 'Setoran', 'Tarikan', 'Transfer', 'Aktivasi layanan', 'Lainnya']
+    : [
+      'Konsultasi kredit',
+      'Pengajuan kredit',
+      'Follow up pengajuan',
+      'Pembayaran angsuran',
+      'Restrukturisasi kredit',
+      'Lainnya',
+    ];
 
-  // Ambil data laporan dari Supabase saat formType/user dimuat
+  // Ambil laporan dari Supabase; halaman admin gabungan memuat kedua jenis laporan.
   useEffect(() => {
     async function fetchReports() {
       if (!user?.id) return;
+      setIsLoadingReports(true);
+      setReportsLoadError('');
       try {
-        const { data, error } = await supabase
-          .from('laporan_rm')
-          .select('*')
-          .eq('form_type', formType)
-          .order('created_at', { ascending: false })
-          .limit(100);
+        let data = [];
+        if (isAllReports) {
+          const pageSize = 1000;
+          for (let offset = 0; ; offset += pageSize) {
+            const { data: page, error } = await supabase
+              .from('laporan_rm')
+              .select('id, user_id, user_name, form_type, full_name, customer_type, identity_number, phone, address, transaction_type, follow_up, photo_url, created_at')
+              .in('form_type', ['rmft', 'rmkredit'])
+              .order('created_at', { ascending: false })
+              .order('id', { ascending: true })
+              .range(offset, offset + pageSize - 1);
+            if (error) throw error;
+            data.push(...(page || []));
+            if (!page || page.length < pageSize) break;
+          }
+        } else {
+          const { data: page, error } = await supabase
+            .from('laporan_rm')
+            .select('*')
+            .eq('form_type', formType)
+            .order('created_at', { ascending: false })
+            .limit(100);
+          if (error) throw error;
+          data = page || [];
+        }
 
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const mapped = data.map((d) => ({
+        const mapped = data.map((d) => ({
             id: d.id,
+            userId: d.user_id,
+            userName: d.user_name || '',
+            formType: d.form_type || formType,
             fullName: d.full_name || '',
             customerType: d.customer_type || '',
             identityNumber: d.identity_number || '',
@@ -79,15 +125,19 @@ export default function TransactionForm({
             photo: d.photo_url || '',
             createdAt: d.created_at || new Date().toISOString(),
           }));
-          setRecords(mapped);
+        setRecords(mapped);
+        if (!isAllReports) {
           localStorage.setItem(getStorageKey(user, formType), JSON.stringify(mapped));
         }
       } catch (err) {
-        console.warn('Gagal memuat laporan Supabase:', err);
+        console.error('Gagal memuat laporan Supabase:', err);
+        setReportsLoadError('Laporan belum dapat dimuat dari server. Periksa koneksi lalu coba lagi.');
+      } finally {
+        setIsLoadingReports(false);
       }
     }
     fetchReports();
-  }, [user, formType]);
+  }, [user, formType, isAllReports]);
 
   const updateField = (event) => {
     const { name, value } = event.target;
@@ -99,6 +149,9 @@ export default function TransactionForm({
     const { name, value } = event.target;
     setEditingRecord((current) => ({ ...current, [name]: value }));
   };
+
+  const canManageRecord = (record) =>
+    isAdminRole(user?.role) || (Boolean(user?.id) && record.userId === user.id);
 
   // Kompresi otomatis foto agar cepat diupload
   const handlePhotoUpload = (file, onSuccess) => {
@@ -173,6 +226,8 @@ export default function TransactionForm({
     const record = {
       ...form,
       id: crypto.randomUUID(),
+      userId: user?.id || null,
+      userName: user?.name || '',
       createdAt: new Date().toISOString(),
     };
 
@@ -184,6 +239,7 @@ export default function TransactionForm({
         .from('laporan_rm')
         .insert({
           user_id: user?.id || null,
+          user_name: user?.name || 'Pegawai',
           form_type: formType,
           full_name: form.fullName.trim(),
           customer_type: form.customerType,
@@ -238,12 +294,11 @@ export default function TransactionForm({
   // Simpan hasil Edit data laporan
   const handleSaveEdit = async (event) => {
     event.preventDefault();
-    if (!editingRecord) return;
+    if (!editingRecord || !canManageRecord(editingRecord)) return;
     setIsEditingSaving(true);
 
     try {
-      // 1. Update ke Supabase
-      const { error: dbError } = await supabase
+      let updateQuery = supabase
         .from('laporan_rm')
         .update({
           full_name: editingRecord.fullName.trim(),
@@ -257,6 +312,11 @@ export default function TransactionForm({
         })
         .eq('id', editingRecord.id);
 
+      if (user?.id && !isAdminRole(user.role)) {
+        updateQuery = updateQuery.eq('user_id', user.id);
+      }
+      const { error: dbError } = await updateQuery;
+
       if (dbError) {
         console.warn('Supabase update notice:', dbError.message);
       }
@@ -269,7 +329,9 @@ export default function TransactionForm({
       r.id === editingRecord.id ? { ...editingRecord } : r,
     );
     setRecords(updatedRecords);
-    localStorage.setItem(getStorageKey(user, formType), JSON.stringify(updatedRecords));
+    if (!isAllReports) {
+      localStorage.setItem(getStorageKey(user, formType), JSON.stringify(updatedRecords));
+    }
 
     // Jika sedang membuka popup detail dari data yang diedit, sinkronkan juga
     if (selectedDetailRecord && selectedDetailRecord.id === editingRecord.id) {
@@ -278,7 +340,7 @@ export default function TransactionForm({
 
     recordActivity(
       user,
-      `Edit ${formType.toUpperCase()}`,
+      `Edit ${(editingRecord.formType || formType).toUpperCase()}`,
       `Memperbarui data laporan ${editingRecord.fullName}`,
     );
 
@@ -289,6 +351,9 @@ export default function TransactionForm({
 
   // Hapus data laporan
   const handleDeleteRecord = async (recordId, recordName = '') => {
+    const recordToDelete = records.find((record) => record.id === recordId);
+    if (!recordToDelete || !canManageRecord(recordToDelete)) return;
+
     if (
       !window.confirm(
         `Yakin ingin menghapus laporan nasabah ${recordName || 'ini'}? Tindakan ini tidak dapat dibatalkan.`,
@@ -298,14 +363,21 @@ export default function TransactionForm({
     }
 
     try {
-      await supabase.from('laporan_rm').delete().eq('id', recordId);
+      let deleteQuery = supabase.from('laporan_rm').delete().eq('id', recordId);
+      if (user?.id && !isAdminRole(user.role)) {
+        deleteQuery = deleteQuery.eq('user_id', user.id);
+      }
+      const { error } = await deleteQuery;
+      if (error) console.warn('Supabase delete notice:', error.message);
     } catch (err) {
       console.warn('Supabase delete error:', err);
     }
 
     const updated = records.filter((r) => r.id !== recordId);
     setRecords(updated);
-    localStorage.setItem(getStorageKey(user, formType), JSON.stringify(updated));
+    if (!isAllReports) {
+      localStorage.setItem(getStorageKey(user, formType), JSON.stringify(updated));
+    }
 
     if (selectedDetailRecord?.id === recordId) {
       setSelectedDetailRecord(null);
@@ -313,7 +385,7 @@ export default function TransactionForm({
 
     recordActivity(
       user,
-      `Hapus ${formType.toUpperCase()}`,
+      `Hapus ${(recordToDelete.formType || formType).toUpperCase()}`,
       `Menghapus data laporan ${recordName}`,
     );
   };
@@ -333,6 +405,10 @@ export default function TransactionForm({
       result = result.filter((r) => r.customerType === statusFilter);
     }
 
+    if (isAllReports && reportTypeFilter !== 'ALL') {
+      result = result.filter((record) => record.formType === reportTypeFilter);
+    }
+
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
       result = result.filter(
@@ -347,7 +423,7 @@ export default function TransactionForm({
     }
 
     return result;
-  }, [sortedRecords, searchTerm, statusFilter]);
+  }, [sortedRecords, searchTerm, statusFilter, reportTypeFilter, isAllReports]);
 
   const copyToClipboard = (text) => {
     navigator.clipboard?.writeText(text);
@@ -358,7 +434,7 @@ export default function TransactionForm({
   return (
     <main className="relative min-h-screen font-sans text-slate-800 pb-16 overflow-x-hidden bg-[#C9DCEF]">
       {/* Background Decor Layer - Serasi dengan Home */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+      <div className="fixed inset-0 pointer-events-none overflow-hidden print:hidden" aria-hidden="true">
         <div className="absolute inset-0 bg-gradient-to-b from-[#C9DCEF] via-[#A9C6E5] to-[#C9DCEF]" />
 
         <div
@@ -385,16 +461,16 @@ export default function TransactionForm({
 
       <div className="relative z-10">
         {/* Top Navbar Header */}
-        <header className="sticky top-0 z-30 w-full backdrop-blur-md bg-white/90 border-b border-slate-200/70 shadow-xs transition-all duration-300">
+        <header className="sticky top-0 z-30 w-full backdrop-blur-md bg-white/90 border-b border-slate-200/70 shadow-xs transition-all duration-300 print:hidden">
           <div className="h-1 bg-[#FF7401] w-full" />
           <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2">
             {/* Tombol Kembali / Navigasi View */}
             {viewMode === 'reports' ? (
               <button
                 type="button"
-                onClick={() => setViewMode('form')}
+                onClick={() => (isAllReports ? onBack() : setViewMode('form'))}
                 className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-full border border-slate-200/80 bg-white hover:bg-slate-50 text-[#014181] text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer group"
-                title="Kembali ke Formulir Input"
+                title={isAllReports ? 'Kembali ke dashboard admin' : 'Kembali ke Formulir Input'}
               >
                 <svg
                   className="w-4 h-4 text-[#014181] group-hover:-translate-x-0.5 transition-transform"
@@ -409,7 +485,7 @@ export default function TransactionForm({
                     d="M10 19l-7-7m0 0l7-7m-7 7h18"
                   />
                 </svg>
-                <span>Formulir Input</span>
+                <span>{isAllReports ? 'Dashboard Admin' : 'Formulir Input'}</span>
               </button>
             ) : (
               <button
@@ -474,28 +550,31 @@ export default function TransactionForm({
                 <div className="space-y-1.5 min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-[#FF7401] text-white shadow-xs">
-                      {isRMFT ? 'Rekap Funding' : 'Rekap Kredit'}
+                      {isAllReports ? 'Rekap Gabungan' : isRMFT ? 'Rekap Funding' : 'Rekap Kredit'}
                     </span>
                     <span className="text-[11px] text-blue-200/80 font-medium">
                       Semua Data Tersimpan
                     </span>
                   </div>
                   <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white drop-shadow-sm truncate">
-                    Laporan {title}
+                    {isAllReports ? 'Semua Laporan' : `Laporan ${title}`}
                   </h1>
                   <p className="text-xs text-blue-100/80 max-w-xl leading-relaxed">
-                    Daftar seluruh laporan nasabah yang telah diupload oleh admin. Data paling atas
-                    merupakan laporan terbaru yang baru saja diunggah.
+                    {isAllReports
+                      ? 'Daftar gabungan laporan RMFT dan RM Kredit dari seluruh pegawai, diurutkan dari yang terbaru.'
+                      : 'Daftar seluruh laporan nasabah. Data paling atas merupakan laporan terbaru.'}
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setViewMode('form')}
-                  className="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-[#014181] hover:bg-blue-50 text-xs font-bold transition-all active:scale-95 shadow-md cursor-pointer whitespace-nowrap"
-                >
-                  <span>+ Upload Laporan Baru</span>
-                </button>
+                {!isAllReports && (
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('form')}
+                    className="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-[#014181] hover:bg-blue-50 text-xs font-bold transition-all active:scale-95 shadow-md cursor-pointer whitespace-nowrap"
+                  >
+                    <span>+ Upload Laporan Baru</span>
+                  </button>
+                )}
               </div>
             </section>
 
@@ -535,8 +614,45 @@ export default function TransactionForm({
                   )}
                 </div>
 
-                {/* Filter Kategori Nasabah */}
+                {/* Filter Kategori Laporan */}
                 <div className="flex items-center gap-1.5 shrink-0 overflow-x-auto pb-1 sm:pb-0">
+                  {isAllReports && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setReportTypeFilter('ALL')}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                          reportTypeFilter === 'ALL'
+                            ? 'bg-[#014181] text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Semua Jenis
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReportTypeFilter('rmft')}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                          reportTypeFilter === 'rmft'
+                            ? 'bg-[#014181] text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        RMFT
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReportTypeFilter('rmkredit')}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                          reportTypeFilter === 'rmkredit'
+                            ? 'bg-[#014181] text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        RM Kredit
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => setStatusFilter('ALL')}
@@ -586,10 +702,21 @@ export default function TransactionForm({
             </section>
 
             {/* DAFTAR CARD LAPORAN */}
-            {filteredRecords.length > 0 ? (
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 items-stretch">
+            {reportsLoadError && viewMode === 'reports' && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800" role="alert">
+                {reportsLoadError}
+              </p>
+            )}
+
+            {isLoadingReports && viewMode === 'reports' ? (
+              <p className="rounded-2xl border border-slate-200 bg-white/90 p-8 text-center text-sm text-slate-500" role="status">
+                Memuat laporan...
+              </p>
+            ) : filteredRecords.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-stretch">
                 {filteredRecords.map((record, index) => {
-                  const isNewest = index === 0 && !searchTerm && statusFilter === 'ALL';
+                  const isNewest = index === 0 && !searchTerm && statusFilter === 'ALL'
+                    && reportTypeFilter === 'ALL';
                   return (
                     <div
                       key={record.id}
@@ -604,13 +731,18 @@ export default function TransactionForm({
                         <div className="space-y-2 pb-2.5 border-b border-slate-100 min-w-0">
                           {isNewest && (
                             <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-[#FF7401] to-[#FF9B3D] text-black text-[10px] font-extrabold tracking-wider uppercase w-fit shadow-xs">
-                              <span>✨</span>
+                              <Icon name="sparkles" size={13} />
                               <span>Terbaru Diupload</span>
                             </div>
                           )}
 
                           <div className="flex items-center justify-between gap-2 min-w-0">
                             <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                              {isAllReports && (
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-[#014181]/10 text-[#014181] border border-[#014181]/15 shrink-0">
+                                  {record.formType === 'rmkredit' ? 'RM KREDIT' : 'RMFT'}
+                                </span>
+                              )}
                               <span
                                 className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border shrink-0 whitespace-nowrap ${
                                   record.customerType === 'Nasabah'
@@ -646,7 +778,7 @@ export default function TransactionForm({
                             />
                           ) : (
                             <div className="w-14 h-14 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-lg shrink-0">
-                              👤
+                              <Icon name="user" size={21} />
                             </div>
                           )}
 
@@ -654,6 +786,11 @@ export default function TransactionForm({
                             <h3 className="text-sm font-bold text-[#014181] truncate" title={record.fullName}>
                               {record.fullName}
                             </h3>
+                            {record.userName && (
+                              <p className="truncate text-[10px] font-medium text-slate-400">
+                                Dibuat oleh {record.userName}
+                              </p>
+                            )}
                             <p className="text-[11px] text-slate-500 truncate">
                               <span className="font-semibold text-slate-700">
                                 {record.customerType === 'Non-Nasabah' ? 'NIK:' : 'No. Rek/NIK:'}
@@ -671,7 +808,7 @@ export default function TransactionForm({
                                   className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200 hover:bg-emerald-100 shrink-0 cursor-pointer"
                                   title="Chat WhatsApp"
                                 >
-                                  WA ↗
+                                  WA <Icon name="externalLink" size={10} />
                                 </a>
                               )}
                             </div>
@@ -681,14 +818,14 @@ export default function TransactionForm({
                         {/* Alamat & Follow Up Snippet Box */}
                         <div className="bg-slate-50/90 rounded-xl p-2.5 border border-slate-100 text-[11px] text-slate-600 space-y-1 min-w-0 overflow-hidden">
                           <div className="flex items-start gap-1.5 min-w-0">
-                            <span className="shrink-0 text-slate-400">📍</span>
+                            <Icon name="pin" size={13} className="shrink-0 text-slate-400" />
                             <p className="truncate min-w-0 flex-1">
                               <strong className="text-slate-700">Alamat:</strong>{' '}
                               {record.address || '-'}
                             </p>
                           </div>
                           <div className="flex items-start gap-1.5 min-w-0">
-                            <span className="shrink-0 text-[#FF7401]">🎯</span>
+                            <Icon name="target" size={13} className="shrink-0 text-[#FF7401]" />
                             <p className="truncate min-w-0 flex-1">
                               <strong className="text-[#FF7401]">Tindak Lanjut:</strong>{' '}
                               {record.followUp || '-'}
@@ -698,37 +835,39 @@ export default function TransactionForm({
                       </div>
 
                       {/* ACTION BUTTONS: DETAIL, EDIT, HAPUS */}
-                      <div className="pt-3 mt-3 border-t border-slate-100 flex items-center gap-2 min-w-0">
+                      <div className="pt-3 mt-3 border-t border-slate-100 flex items-center gap-2 min-w-0 print:hidden">
                         {/* Tombol Detail */}
                         <button
                           type="button"
                           onClick={() => setSelectedDetailRecord(record)}
                           className="flex-1 py-1.5 px-2.5 text-xs font-bold text-[#014181] bg-blue-50 hover:bg-[#014181] hover:text-white border border-blue-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
                         >
-                          <span>👁️</span>
+                          <Icon name="eye" size={14} />
                           <span>Detail</span>
                         </button>
 
                         {/* Tombol Edit */}
-                        <button
-                          type="button"
-                          onClick={() => setEditingRecord({ ...record })}
-                          className="flex-1 py-1.5 px-2.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-600 hover:text-white border border-amber-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
-                        >
-                          <span>✏️</span>
-                          <span>Edit</span>
-                        </button>
-
-                        {/* Tombol Hapus */}
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteRecord(record.id, record.fullName)}
-                          className="flex-1 py-1.5 px-2.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-600 hover:text-white border border-rose-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
-                          title="Hapus data ini"
-                        >
-                          <span>🗑️</span>
-                          <span>Hapus</span>
-                        </button>
+                        {canManageRecord(record) && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setEditingRecord({ ...record })}
+                              className="flex-1 py-1.5 px-2.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-600 hover:text-white border border-amber-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
+                            >
+                              <Icon name="edit" size={13} />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRecord(record.id, record.fullName)}
+                              className="flex-1 py-1.5 px-2.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-600 hover:text-white border border-rose-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
+                              title="Hapus data ini"
+                            >
+                              <Icon name="trash" size={13} />
+                              <span>Hapus</span>
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   );
@@ -737,25 +876,27 @@ export default function TransactionForm({
             ) : (
               <div className="py-16 text-center bg-white/90 backdrop-blur-md rounded-3xl border border-dashed border-slate-300 p-6 space-y-3">
                 <div className="w-16 h-16 rounded-full bg-blue-50 text-[#014181] flex items-center justify-center text-3xl mx-auto">
-                  📋
+                  <Icon name="clipboard" size={22} />
                 </div>
                 <h3 className="text-sm sm:text-base font-bold text-slate-700">
-                  {searchTerm || statusFilter !== 'ALL'
+                  {searchTerm || statusFilter !== 'ALL' || reportTypeFilter !== 'ALL'
                     ? 'Tidak ada data laporan yang cocok'
                     : 'Belum Ada Laporan Tersimpan'}
                 </h3>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                  {searchTerm || statusFilter !== 'ALL'
+                  {searchTerm || statusFilter !== 'ALL' || reportTypeFilter !== 'ALL'
                     ? 'Coba ganti kata kunci pencarian atau ubah filter status nasabah.'
                     : 'Mulai dokumentasikan aktivitas transaksi nasabah Anda melalui formulir input.'}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('form')}
-                  className="px-5 py-2.5 text-xs font-bold text-white bg-gradient-to-r from-[#014181] to-[#0A5AA3] hover:from-[#002D5B] hover:to-[#014181] rounded-xl transition-all shadow-md active:scale-95 cursor-pointer inline-flex items-center gap-2 mt-2"
-                >
-                  <span>+ Input Laporan Sekarang</span>
-                </button>
+                {!isAllReports && (
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('form')}
+                    className="px-5 py-2.5 text-xs font-bold text-white bg-gradient-to-r from-[#014181] to-[#0A5AA3] hover:from-[#002D5B] hover:to-[#014181] rounded-xl transition-all shadow-md active:scale-95 cursor-pointer inline-flex items-center gap-2 mt-2"
+                  >
+                    <span>+ Input Laporan Sekarang</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -796,7 +937,7 @@ export default function TransactionForm({
                   onClick={() => setViewMode('reports')}
                   className="shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-bold transition-all active:scale-95 shadow-sm backdrop-blur-md cursor-pointer"
                 >
-                  <span>📋 Lihat Laporan</span>
+                  <span className="inline-flex items-center gap-1.5"><Icon name="clipboard" size={14} /> Lihat Laporan</span>
                   <span className="px-1.5 py-0.5 rounded-full bg-[#FF7401] text-[10px] font-bold">
                     {records.length}
                   </span>
@@ -833,7 +974,10 @@ export default function TransactionForm({
                   }`}
                 >
                   <span>
-                    {message.type === 'error' ? '⚠️' : message.type === 'success' ? '✅' : 'ℹ️'}
+                    <Icon
+                      name={message.type === 'error' ? 'warning' : message.type === 'success' ? 'check' : 'info'}
+                      size={15}
+                    />
                   </span>
                   <span>{message.text}</span>
                 </div>
@@ -1009,7 +1153,7 @@ export default function TransactionForm({
                   ) : (
                     <label className="group flex flex-col items-center justify-center p-6 border-2 border-dashed border-slate-200 hover:border-[#FF7401]/60 rounded-2xl bg-slate-50/60 hover:bg-white transition-all cursor-pointer">
                       <div className="w-10 h-10 rounded-full bg-blue-50 text-[#014181] group-hover:bg-orange-50 group-hover:text-[#FF7401] flex items-center justify-center text-lg mb-2 transition-colors">
-                        📷
+                        <Icon name="camera" size={22} />
                       </div>
                       <p className="text-xs font-bold text-slate-700 group-hover:text-[#014181]">
                         Pilih atau Ambil Foto Dokumentasi
@@ -1054,7 +1198,7 @@ export default function TransactionForm({
                           <span>Mengupload...</span>
                         </>
                       ) : (
-                        <span>📤 Upload Laporan</span>
+                        <span className="inline-flex items-center gap-1.5"><Icon name="upload" size={14} /> Upload Laporan</span>
                       )}
                     </button>
                   </div>
@@ -1068,6 +1212,90 @@ export default function TransactionForm({
       {/* ============================================================
           POPUP MODAL DETAIL DATA NASABAH (selectedDetailRecord !== null)
           ============================================================ */}
+      {selectedDetailRecord && (
+        <article className="report-print-document" aria-hidden="true">
+          <header className="report-print-header">
+            <img src="/Img/bri-logo.png" alt="Bank BRI" />
+            <div>
+              <p>BRI DIGITAL</p>
+              <h1>LAPORAN KUNJUNGAN NASABAH</h1>
+              <span>
+                {(selectedDetailRecord.formType || formType) === 'rmft'
+                  ? 'Relationship Manager Funding & Transaksi'
+                  : 'Relationship Manager Kredit'}
+              </span>
+            </div>
+          </header>
+
+          <p className="report-print-intro">
+            Berikut disampaikan laporan kegiatan dan tindak lanjut nasabah yang telah dicatat melalui aplikasi Laporan Harian Relationship Manager.
+          </p>
+
+          <table className="report-print-table">
+            <tbody>
+              <tr>
+                <th>Nama Nasabah</th>
+                <td>{selectedDetailRecord.fullName || '-'}</td>
+              </tr>
+              <tr>
+                <th>Status Nasabah</th>
+                <td>{selectedDetailRecord.customerType || '-'}</td>
+              </tr>
+              <tr>
+                <th>No. Rekening / NIK</th>
+                <td>{selectedDetailRecord.identityNumber || '-'}</td>
+              </tr>
+              <tr>
+                <th>No. Handphone / WhatsApp</th>
+                <td>{selectedDetailRecord.phone || '-'}</td>
+              </tr>
+              <tr>
+                <th>Alamat / Lokasi Kunjungan</th>
+                <td>{selectedDetailRecord.address || '-'}</td>
+              </tr>
+              <tr>
+                <th>Jenis Layanan / Transaksi</th>
+                <td>{selectedDetailRecord.transactionType || '-'}</td>
+              </tr>
+              <tr>
+                <th>Rencana Tindak Lanjut</th>
+                <td>{selectedDetailRecord.followUp || '-'}</td>
+              </tr>
+              <tr>
+                <th>Waktu Pencatatan</th>
+                <td>
+                  {new Intl.DateTimeFormat('id-ID', {
+                    dateStyle: 'full',
+                    timeStyle: 'short',
+                  }).format(new Date(selectedDetailRecord.createdAt))}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p className="report-print-note">
+            Laporan ini dibuat secara elektronik berdasarkan data yang dicatat oleh petugas.
+          </p>
+
+          <footer className="report-print-signatures">
+            <div>
+              <p>Petugas Relationship Manager,</p>
+              <strong>{selectedDetailRecord.userName || user?.name || 'Pegawai'}</strong>
+            </div>
+            <div>
+              <p>Mengetahui,</p>
+              <strong>________________________</strong>
+            </div>
+          </footer>
+          <p className="report-print-generated">
+            Dicetak pada {new Intl.DateTimeFormat('id-ID', {
+              dateStyle: 'full',
+              timeStyle: 'short',
+            }).format(new Date())}
+          </p>
+        </article>
+      )}
+
       {selectedDetailRecord && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200"
@@ -1139,7 +1367,7 @@ export default function TransactionForm({
                         className="text-[10px] text-slate-400 hover:text-[#014181] font-semibold p-1"
                         title="Salin nomor"
                       >
-                        {copiedId ? '✓ Tersalin' : '📋 Salin'}
+                        {copiedId ? '✓ Tersalin' : <><Icon name="clipboard" size={12} /> Salin</>}
                       </button>
                     )}
                   </div>
@@ -1160,7 +1388,7 @@ export default function TransactionForm({
                         rel="noreferrer"
                         className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 hover:bg-emerald-100"
                       >
-                        💬 Chat WA
+                        <><Icon name="chat" size={12} /> Chat WA</>
                       </a>
                     )}
                   </div>
@@ -1225,7 +1453,7 @@ export default function TransactionForm({
                       onClick={() => setPreviewPhoto(selectedDetailRecord.photo)}
                     >
                       <span className="text-white text-xs font-bold px-3 py-1.5 rounded-full bg-black/60">
-                        🔍 Klik untuk perbesar
+                        <><Icon name="eye" size={13} /> Klik untuk perbesar</>
                       </span>
                     </div>
                   </div>
@@ -1240,6 +1468,8 @@ export default function TransactionForm({
             {/* Footer Detail */}
             <div className="p-3 sm:p-4 px-4 sm:px-6 bg-slate-50/90 border-t border-slate-100 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
+                {canManageRecord(selectedDetailRecord) && (
+                  <>
                 <button
                   type="button"
                   onClick={() => {
@@ -1247,7 +1477,7 @@ export default function TransactionForm({
                   }}
                   className="px-3.5 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center gap-1"
                 >
-                  <span>✏️</span>
+                  <Icon name="edit" size={13} />
                   <span>Edit Data</span>
                 </button>
                 <button
@@ -1260,18 +1490,29 @@ export default function TransactionForm({
                   }
                   className="px-3.5 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center gap-1"
                 >
-                  <span>🗑️</span>
+                  <Icon name="trash" size={13} />
                   <span>Hapus</span>
                 </button>
+                  </>
+                )}
               </div>
 
-              <button
-                type="button"
-                onClick={() => setSelectedDetailRecord(null)}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-[#014181] hover:bg-[#0A5AA3] rounded-xl transition-all active:scale-95 shadow-xs cursor-pointer"
-              >
-                Tutup
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3.5 py-1.5 text-xs font-bold text-white bg-[#014181] hover:bg-[#0A5AA3] rounded-xl transition-all active:scale-95 shadow-xs cursor-pointer"
+                >
+                  Unduh PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDetailRecord(null)}
+                  className="px-4 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition-all active:scale-95 shadow-xs cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1373,7 +1614,7 @@ export default function TransactionForm({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1">
-                  <label className="block text-xs font-bold text-slate-700">{transactionLabel}</label>
+                  <label className="block text-xs font-bold text-slate-700">{editingTransactionLabel}</label>
                   <select
                     name="transactionType"
                     value={editingRecord.transactionType}
@@ -1381,7 +1622,7 @@ export default function TransactionForm({
                     required
                     className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800"
                   >
-                    {transactionOptions.map((opt) => (
+                    {editingTransactionOptions.map((opt) => (
                       <option value={opt} key={opt}>
                         {opt}
                       </option>
@@ -1451,7 +1692,7 @@ export default function TransactionForm({
                   </div>
                 ) : (
                   <label className="flex items-center justify-center gap-2 p-4 border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 transition-colors cursor-pointer text-xs font-bold text-[#014181]">
-                    <span>📷 Upload Foto Baru</span>
+                    <span className="inline-flex items-center gap-1.5"><Icon name="camera" size={14} /> Upload Foto Baru</span>
                     <input
                       type="file"
                       accept="image/*"

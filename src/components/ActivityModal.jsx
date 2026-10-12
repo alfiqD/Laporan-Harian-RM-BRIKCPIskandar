@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { formatActivityTime } from '../pages/auth/activityLog.js';
+import Icon from './Icon.jsx';
 
 export default function ActivityModal({
   isOpen,
@@ -165,6 +166,11 @@ export default function ActivityModal({
                     <p className="text-[11px] text-slate-500 mt-0.5 break-words line-clamp-2">
                       {activity.detail || '-'}
                     </p>
+                    {activity.userName && (
+                      <p className="mt-1 text-[10px] font-semibold text-slate-400">
+                        Oleh {activity.userName}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <time className="text-[10px] font-semibold text-[#014181] bg-white px-2.5 py-1 rounded-full border border-slate-200/80 shrink-0 shadow-2xs whitespace-nowrap mt-0.5">
@@ -175,7 +181,7 @@ export default function ActivityModal({
           ) : (
             <div className="py-12 text-center bg-slate-50/60 rounded-2xl border border-dashed border-slate-200">
               <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-2 text-lg">
-                📋
+                <Icon name="clipboard" size={22} />
               </div>
               <p className="text-xs font-bold text-slate-500">
                 {searchTerm ? 'Tidak ada hasil yang sesuai' : 'Belum ada aktivitas'}
