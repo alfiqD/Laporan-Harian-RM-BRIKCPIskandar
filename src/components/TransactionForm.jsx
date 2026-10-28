@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { useLocation } from 'react-router-dom';
 import { supabase } from '../config/supabaseClient.js';
 import { recordActivity } from '../pages/auth/activityLog.js';
 import { isAdminRole } from '../config/rolesConfig.jsx';
@@ -41,8 +42,10 @@ export default function TransactionForm({
   transactionLabel,
   transactionOptions,
 }) {
+  const location = useLocation();
   const isAllReports = isAdminRole(user?.role)
     && new URLSearchParams(window.location.search).get('scope') === 'all';
+  const returnToDashboard = location.state?.returnToDashboard === true;
   // View mode: 'form' (input formulir) atau 'reports' (halaman kartu laporan)
   const [viewMode, setViewMode] = useState(
     new URLSearchParams(window.location.search).get('view') === 'reports' ? 'reports' : 'form',
@@ -468,9 +471,15 @@ export default function TransactionForm({
             {viewMode === 'reports' ? (
               <button
                 type="button"
-                onClick={() => (isAllReports ? onBack() : setViewMode('form'))}
+                onClick={() => (
+                  isAllReports || returnToDashboard ? onBack() : setViewMode('form')
+                )}
                 className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-full border border-slate-200/80 bg-white hover:bg-slate-50 text-[#014181] text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer group"
-                title={isAllReports ? 'Kembali ke dashboard admin' : 'Kembali ke Formulir Input'}
+                title={
+                  isAllReports || returnToDashboard
+                    ? 'Kembali ke dashboard'
+                    : 'Kembali ke Formulir Input'
+                }
               >
                 <svg
                   className="w-4 h-4 text-[#014181] group-hover:-translate-x-0.5 transition-transform"
@@ -485,7 +494,11 @@ export default function TransactionForm({
                     d="M10 19l-7-7m0 0l7-7m-7 7h18"
                   />
                 </svg>
-                <span>{isAllReports ? 'Dashboard Admin' : 'Formulir Input'}</span>
+                <span>
+                  {isAllReports || returnToDashboard
+                    ? isAllReports ? 'Dashboard Admin' : 'Dashboard'
+                    : 'Formulir Input'}
+                </span>
               </button>
             ) : (
               <button

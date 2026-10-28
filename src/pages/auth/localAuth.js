@@ -280,6 +280,16 @@ export function saveAuthSession(user) {
   );
 }
 
+export function updateAuthSessionUser(user) {
+  const session = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+  if (!session) return;
+
+  localStorage.setItem(
+    SESSION_STORAGE_KEY,
+    JSON.stringify({ ...session, user }),
+  );
+}
+
 export function loadAuthSession() {
   try {
     const storedSession = localStorage.getItem(SESSION_STORAGE_KEY);

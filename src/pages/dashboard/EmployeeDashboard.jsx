@@ -53,9 +53,9 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const navigateTo = (page, label) => {
+  const navigateTo = (page, label, options) => {
     recordActivity(user, 'Membuka menu', `Membuka menu ${label}`);
-    onNavigate(page);
+    onNavigate(page, options);
   };
 
   const handleLogout = () => {
@@ -113,7 +113,9 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigateTo(item.reportPage, `Laporan ${item.label}`)}
+                    onClick={() => navigateTo(item.reportPage, `Laporan ${item.label}`, {
+                      state: { returnToDashboard: true },
+                    })}
                     className="rounded-xl border border-[#014181]/25 bg-blue-50 px-3 py-2.5 text-xs font-bold text-[#014181] transition hover:bg-blue-100"
                   >
                     Lihat Laporan

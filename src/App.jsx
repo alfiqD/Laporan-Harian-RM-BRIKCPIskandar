@@ -1,10 +1,12 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { supabase } from './config/supabaseClient.js';
 import {
   clearAuthSession,
   loadAuthSession,
   saveAuthSession,
   touchAuthSession,
+  updateAuthSessionUser,
 } from './pages/auth/localAuth.js';
 import { isAdminRole } from './config/rolesConfig.jsx';
 import { recordActivity } from './pages/auth/activityLog.js';
@@ -81,6 +83,101 @@ export default function App() {
   const [registrationNotice, setRegistrationNotice] = useState('');
   const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
 
+  useEffect(() => {
+    if (!currentUser?.id) return undefined;
+
+    let isActive = true;
+    let channel;
+    let pollTimer;
+    let hasLoggedSyncError = false;
+
+    const applyProfile = (profile) => {
+      if (!profile || profile.id !== currentUser.id) return;
+
+      setCurrentUser((activeUser) => {
+        if (!activeUser || activeUser.id !== profile.id) return activeUser;
+
+        const updatedUser = {
+          ...activeUser,
+          name: profile.name || activeUser.name,
+          email: profile.email || activeUser.email,
+          role: profile.role || activeUser.role,
+          jobTitle: profile.job_title || activeUser.jobTitle,
+          photo: profile.photo_url || activeUser.photo,
+        };
+        const hasChanged = Object.keys(updatedUser).some(
+          (key) => updatedUser[key] !== activeUser[key],
+        );
+
+        return hasChanged ? updatedUser : activeUser;
+      });
+    };
+
+    const syncProfile = async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, email, role, job_title, photo_url')
+        .eq('id', currentUser.id)
+        .maybeSingle();
+
+      if (!isActive) return;
+      if (error) {
+        if (!hasLoggedSyncError) {
+          console.warn('Gagal menyinkronkan role dan profil dari Supabase:', error.message);
+          hasLoggedSyncError = true;
+        }
+        return;
+      }
+
+      hasLoggedSyncError = false;
+      if (data) applyProfile(data);
+    };
+
+    const startProfileSync = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (!isActive) return;
+      if (error) {
+        console.warn('Gagal memeriksa sesi Supabase untuk sinkronisasi profil:', error.message);
+        return;
+      }
+      if (data.session?.user.id !== currentUser.id) return;
+
+      await syncProfile();
+      if (!isActive) return;
+
+      channel = supabase
+        .channel(`profile-role:${currentUser.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'profiles',
+            filter: `id=eq.${currentUser.id}`,
+          },
+          (payload) => applyProfile(payload.new),
+        )
+        .subscribe((status) => {
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.warn(`Realtime profil Supabase tidak tersedia: ${status}`);
+          }
+        });
+
+      pollTimer = window.setInterval(syncProfile, 15_000);
+    };
+
+    startProfileSync();
+    return () => {
+      isActive = false;
+      window.clearInterval(pollTimer);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (currentUser) updateAuthSessionUser(currentUser);
+  }, [currentUser]);
+
   const performLogout = () => {
     if (currentUser) {
       recordActivity(currentUser, 'Logout', `${currentUser.name} keluar dari aplikasi`);
@@ -126,7 +223,7 @@ export default function App() {
   const homePage = currentUser ? (
     <Home
       user={currentUser}
-      onNavigate={(page) => navigate(`/${page}`)}
+      onNavigate={(page, options) => navigate(`/${page}`, options)}
       onUpdateUser={(updatedUser) => {
         saveAuthSession(updatedUser);
         setCurrentUser(updatedUser);
