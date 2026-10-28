@@ -89,7 +89,7 @@ export default function Registrasi({ onLogin, onRegistered }) {
               minLength={8}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              required
+              required 
             />
             <button
               className="password-toggle"

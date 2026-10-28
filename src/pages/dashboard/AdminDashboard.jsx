@@ -53,7 +53,7 @@ export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
           rmft: reports.filter((report) => report.form_type === 'rmft').length,
           rmkredit: reports.filter((report) => report.form_type === 'rmkredit').length,
         }));
-      }
+      }   
     }
 
     loadAdminData();
