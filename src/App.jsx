@@ -15,6 +15,7 @@ const Login = React.lazy(() => import('./pages/auth/login.jsx'));
 const Registrasi = React.lazy(() => import('./pages/auth/registrasi.jsx'));
 const Home = React.lazy(() => import('./pages/home.jsx'));
 const ActivityHistoryPage = React.lazy(() => import('./pages/activity/ActivityHistoryPage.jsx'));
+const TindakLanjutPage = React.lazy(() => import('./pages/tindaklanjut/TindakLanjutPage.jsx'));
 const EmployeeManagementPage = React.lazy(() => import('./pages/admin/EmployeeManagementPage.jsx'));
 const AdminLayout = React.lazy(() => import('./pages/admin/AdminLayout.jsx'));
 const RMFT = React.lazy(() => import('./pages/RMFT/index.jsx'));
@@ -245,6 +246,23 @@ export default function App() {
           path="/activity"
           element={currentUser ? (
             <ActivityHistoryPage
+              user={currentUser}
+              onBack={() => navigate('/')}
+              onLogout={requestLogout}
+              onUpdateUser={(updatedUser) => {
+                saveAuthSession(updatedUser);
+                setCurrentUser(updatedUser);
+                return updatedUser;
+              }}
+            />
+          ) : (
+            <Navigate to="/login" replace />
+          )}
+        />
+        <Route
+          path="/tindak-lanjut"
+          element={currentUser ? (
+            <TindakLanjutPage
               user={currentUser}
               onBack={() => navigate('/')}
               onLogout={requestLogout}

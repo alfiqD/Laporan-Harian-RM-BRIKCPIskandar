@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Outlet } from "react-router-dom";
 import { MdOutlineAutoAwesome } from "react-icons/md";
 import { FiTrendingUp, FiShield, FiPieChart, FiPackage, FiChevronLeft, FiChevronRight, FiHeart } from "react-icons/fi";

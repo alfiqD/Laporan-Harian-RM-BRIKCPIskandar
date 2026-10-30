@@ -1,8 +1,17 @@
-import { useEffect, useState, useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../config/supabaseClient.js';
 import { recordActivity } from '../pages/auth/activityLog.js';
 import { isAdminRole } from '../config/rolesConfig.jsx';
+import {
+  fetchTaskCandidates,
+  formatJakartaDate,
+  maskIdentity,
+  setReportTaskLink,
+  syncTaskFromEditedReport,
+  syncTaskWithReport,
+  TASK_STATUS,
+} from '../services/tindakLanjut.js';
 import Icon from './Icon.jsx';
 
 const MAX_SAVED_RECORDS = 50;
@@ -29,10 +38,44 @@ const blankForm = {
   phone: '',
   address: '',
   transactionType: '',
+  followUpStatus: '',
   followUp: '',
+  linkedTaskId: '',
   photo: '',
   photoName: '',
 };
+
+const FOLLOW_UP_STATUS_OPTIONS = [
+  {
+    value: 'pending',
+    label: 'Perlu Ditindaklanjuti',
+    hint: 'Keterangan rencana langkah berikutnya wajib diisi',
+  },
+  {
+    value: 'done',
+    label: 'Selesai',
+    hint: 'Pekerjaan selesai; keterangan penyelesaian dapat dicatat',
+  },
+];
+
+function normalizeFollowUpStatus(status) {
+  return status === 'done' ? 'done' : 'pending';
+}
+
+// Kolom opsional hasil migration tindak-lanjut.sql. Selama belum ada di
+// database, aplikasi tetap berjalan dengan memuat/menyimpan kolom lama.
+const OPTIONAL_REPORT_COLUMNS = ['follow_up_status', 'tindak_lanjut_id'];
+
+function isMissingOptionalColumn(error) {
+  const text = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  return OPTIONAL_REPORT_COLUMNS.some((column) => text.includes(column));
+}
+
+function stripOptionalColumns(payload) {
+  const next = { ...payload };
+  OPTIONAL_REPORT_COLUMNS.forEach((column) => delete next[column]);
+  return next;
+}
 
 export default function TransactionForm({
   user,
@@ -43,6 +86,7 @@ export default function TransactionForm({
   transactionOptions,
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const isAllReports = isAdminRole(user?.role)
     && new URLSearchParams(window.location.search).get('scope') === 'all';
   const returnToDashboard = location.state?.returnToDashboard === true;
@@ -51,7 +95,19 @@ export default function TransactionForm({
     new URLSearchParams(window.location.search).get('view') === 'reports' ? 'reports' : 'form',
   );
 
-  const [form, setForm] = useState(blankForm);
+  const [form, setForm] = useState(() => {
+    const task = location.state?.prefillTask;
+    if (!task) return blankForm;
+    return {
+      ...blankForm,
+      fullName: task.customerName || '',
+      customerType: task.customerType || '',
+      identityNumber: task.customerIdentity || '',
+      phone: task.phone || '',
+      transactionType: task.activity || '',
+      linkedTaskId: task.id || '',
+    };
+  });
   const [records, setRecords] = useState(() => readSavedRecords(user, isAllReports ? 'all' : formType));
   const [selectedDetailRecord, setSelectedDetailRecord] = useState(null);
   const [editingRecord, setEditingRecord] = useState(null);
@@ -61,10 +117,22 @@ export default function TransactionForm({
   const [isEditingSaving, setIsEditingSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [followUpFilter, setFollowUpFilter] = useState('ALL');
   const [reportTypeFilter, setReportTypeFilter] = useState('ALL');
   const [copiedId, setCopiedId] = useState(false);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [reportsLoadError, setReportsLoadError] = useState('');
+  const [taskCandidates, setTaskCandidates] = useState(() => {
+    const task = location.state?.prefillTask;
+    return task ? [task] : [];
+  });
+  const [isLoadingTaskCandidates, setIsLoadingTaskCandidates] = useState(false);
+  const submitLockRef = useRef(false);
+
+  const linkedTask = useMemo(
+    () => taskCandidates.find((task) => task.id === form.linkedTaskId) || null,
+    [taskCandidates, form.linkedTaskId],
+  );
 
   const isRMFT = formType === 'rmft';
   const editingIsRMFT = (editingRecord?.formType || formType) === 'rmft';
@@ -82,6 +150,15 @@ export default function TransactionForm({
 
   // Ambil laporan dari Supabase; halaman admin gabungan memuat kedua jenis laporan.
   useEffect(() => {
+    // level 0 = kolom lama, 1 = +follow_up_status, 2 = +tindak_lanjut_id
+    const reportColumns = (level) => [
+      'id', 'user_id', 'user_name', 'form_type', 'full_name', 'customer_type',
+      'identity_number', 'phone', 'address', 'transaction_type', 'follow_up',
+      ...(level >= 1 ? ['follow_up_status'] : []),
+      ...(level >= 2 ? ['tindak_lanjut_id'] : []),
+      'photo_url', 'created_at',
+    ].join(', ');
+
     async function fetchReports() {
       if (!user?.id) return;
       setIsLoadingReports(true);
@@ -89,19 +166,32 @@ export default function TransactionForm({
       try {
         let data = [];
         if (isAllReports) {
-          const pageSize = 1000;
-          for (let offset = 0; ; offset += pageSize) {
-            const { data: page, error } = await supabase
-              .from('laporan_rm')
-              .select('id, user_id, user_name, form_type, full_name, customer_type, identity_number, phone, address, transaction_type, follow_up, photo_url, created_at')
-              .in('form_type', ['rmft', 'rmkredit'])
-              .order('created_at', { ascending: false })
-              .order('id', { ascending: true })
-              .range(offset, offset + pageSize - 1);
-            if (error) throw error;
-            data.push(...(page || []));
-            if (!page || page.length < pageSize) break;
+          const loadAllPages = async (level) => {
+            const pageSize = 1000;
+            const rows = [];
+            for (let offset = 0; ; offset += pageSize) {
+              const { data: page, error } = await supabase
+                .from('laporan_rm')
+                .select(reportColumns(level))
+                .in('form_type', ['rmft', 'rmkredit'])
+                .order('created_at', { ascending: false })
+                .order('id', { ascending: true })
+                .range(offset, offset + pageSize - 1);
+              if (error) return { data: null, error };
+              rows.push(...(page || []));
+              if (!page || page.length < pageSize) return { data: rows, error: null };
+            }
+          };
+
+          let result = await loadAllPages(2);
+          // Turunkan level kolom bila migration terbaru belum dijalankan,
+          // agar laporan lama tetap tampil.
+          for (const level of [1, 0]) {
+            if (!result.error || !isMissingOptionalColumn(result.error)) break;
+            result = await loadAllPages(level);
           }
+          if (result.error) throw result.error;
+          data = result.data || [];
         } else {
           const { data: page, error } = await supabase
             .from('laporan_rm')
@@ -124,7 +214,10 @@ export default function TransactionForm({
             phone: d.phone || '',
             address: d.address || '',
             transactionType: d.transaction_type || '',
+            activityResult: d.activity_result || '',
+            followUpStatus: normalizeFollowUpStatus(d.follow_up_status),
             followUp: d.follow_up || '',
+            tindakLanjutId: d.tindak_lanjut_id || '',
             photo: d.photo_url || '',
             createdAt: d.created_at || new Date().toISOString(),
           }));
@@ -142,9 +235,51 @@ export default function TransactionForm({
     fetchReports();
   }, [user, formType, isAllReports]);
 
+  // Cari tugas tindak lanjut aktif milik nasabah yang sedang diinput.
+  // Hanya sebagai kandidat — tidak pernah menutup tugas secara otomatis.
+  useEffect(() => {
+    if (viewMode !== 'form' || !user?.id) return undefined;
+    const identity = form.identityNumber.trim();
+    const name = form.fullName.trim();
+    const shouldSearch = identity.length >= 4 || name.length >= 3;
+
+    let isActive = true;
+    const timer = setTimeout(async () => {
+      if (!isActive) return;
+      if (!shouldSearch) {
+        setTaskCandidates([]);
+        return;
+      }
+      setIsLoadingTaskCandidates(true);
+      const rows = await fetchTaskCandidates({
+        user,
+        customerIdentity: identity,
+        customerName: name,
+      });
+      if (!isActive) return;
+      setTaskCandidates(rows);
+      setIsLoadingTaskCandidates(false);
+    }, 450);
+
+    return () => {
+      isActive = false;
+      clearTimeout(timer);
+    };
+  }, [viewMode, user, form.identityNumber, form.fullName]);
+
   const updateField = (event) => {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
+    setMessage({ text: '', type: '' });
+  };
+
+  // Dropdown status tindak lanjut: RM dapat mengisi rencana langkah berikutnya atau keterangan penyelesaian.
+  const handleFollowUpStatusChange = (event) => {
+    const { value } = event.target;
+    setForm((current) => ({
+      ...current,
+      followUpStatus: value,
+    }));
     setMessage({ text: '', type: '' });
   };
 
@@ -153,8 +288,25 @@ export default function TransactionForm({
     setEditingRecord((current) => ({ ...current, [name]: value }));
   };
 
+  const handleEditingFollowUpStatusChange = (event) => {
+    const { value } = event.target;
+    setEditingRecord((current) => ({
+      ...current,
+      followUpStatus: value,
+    }));
+  };
+
   const canManageRecord = (record) =>
     isAdminRole(user?.role) || (Boolean(user?.id) && record.userId === user.id);
+
+  // Buka modal edit dengan status tindak lanjut yang selalu valid.
+  const startEditingRecord = (record) => {
+    setEditingRecord({
+      ...record,
+      followUpStatus: normalizeFollowUpStatus(record.followUpStatus),
+      followUp: record.followUp || '',
+    });
+  };
 
   // Kompresi otomatis foto agar cepat diupload
   const handlePhotoUpload = (file, onSuccess) => {
@@ -223,6 +375,28 @@ export default function TransactionForm({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    // Cegah klik ganda / submit berulang.
+    if (submitLockRef.current) return;
+
+    if (!form.followUpStatus) {
+      setMessage({ text: 'Pilih status tindak lanjut terlebih dahulu.', type: 'error' });
+      return;
+    }
+    if (form.followUpStatus === 'pending' && !form.followUp.trim()) {
+      setMessage({ text: 'Keterangan tindak lanjut (rencana langkah berikutnya) wajib diisi jika status "Perlu Ditindaklanjuti".', type: 'error' });
+      return;
+    }
+
+    // Konfirmasi sebelum menutup tugas tindak lanjut.
+    if (linkedTask && form.followUpStatus === TASK_STATUS.DONE) {
+      const confirmed = window.confirm(
+        `Laporan ini akan menutup tugas tindak lanjut "${linkedTask.activity || 'pekerjaan'}" `
+        + `milik ${linkedTask.customerName}. Lanjutkan?`,
+      );
+      if (!confirmed) return;
+    }
+
+    submitLockRef.current = true;
     setIsSaving(true);
     setMessage({ text: '', type: '' });
 
@@ -236,34 +410,76 @@ export default function TransactionForm({
 
     let savedId = record.id;
     let savedCreatedAt = record.createdAt;
+    let reportPersisted = false;
+    let taskSyncNote = '';
 
     try {
-      const { data: dbData, error: dbError } = await supabase
+      const payload = {
+        // id eksplisit membuat submit ganda gagal (konflik primary key)
+        // alih-alih membuat laporan duplikat.
+        id: record.id,
+        user_id: user?.id || null,
+        user_name: user?.name || 'Pegawai',
+        form_type: formType,
+        full_name: form.fullName.trim(),
+        customer_type: form.customerType,
+        identity_number: form.identityNumber.trim(),
+        phone: form.phone.trim(),
+        address: form.address.trim(),
+        transaction_type: form.transactionType,
+        follow_up_status: form.followUpStatus,
+        follow_up: form.followUp.trim(),
+        photo_url: form.photo,
+      };
+
+      let { data: dbData, error: dbError } = await supabase
         .from('laporan_rm')
-        .insert({
-          user_id: user?.id || null,
-          user_name: user?.name || 'Pegawai',
-          form_type: formType,
-          full_name: form.fullName.trim(),
-          customer_type: form.customerType,
-          identity_number: form.identityNumber.trim(),
-          phone: form.phone.trim(),
-          address: form.address.trim(),
-          transaction_type: form.transactionType,
-          follow_up: form.followUp.trim(),
-          photo_url: form.photo,
-        })
+        .insert(payload)
         .select()
         .single();
+
+      if (dbError && isMissingOptionalColumn(dbError)) {
+        // Kolom hasil migration belum tersedia; simpan dengan kolom lama.
+        ({ data: dbData, error: dbError } = await supabase
+          .from('laporan_rm')
+          .insert(stripOptionalColumns(payload))
+          .select()
+          .single());
+      }
 
       if (dbError) {
         console.warn('Supabase insert notice:', dbError.message);
       } else if (dbData) {
         savedId = dbData.id;
         savedCreatedAt = dbData.created_at;
+        reportPersisted = true;
       }
     } catch (dbErr) {
       console.warn('Supabase offline/error, menyimpan lokal:', dbErr);
+    }
+
+    // Sinkronkan tugas tindak lanjut (hanya jika laporan benar-benar tersimpan).
+    if (reportPersisted) {
+      try {
+        const { taskId, error } = await syncTaskWithReport({
+          user,
+          form,
+          formType,
+          reportId: savedId,
+          linkedTask,
+        });
+
+        if (error) {
+          taskSyncNote = ' Laporan tersimpan, namun tugas tindak lanjut gagal disinkronkan.';
+          console.warn('Sinkronisasi tugas tindak lanjut:', error.message);
+        } else if (taskId) {
+          await setReportTaskLink(savedId, taskId);
+          record.tindakLanjutId = taskId;
+        }
+      } catch (taskErr) {
+        console.warn('Sinkronisasi tugas tindak lanjut error:', taskErr);
+        taskSyncNote = ' Laporan tersimpan, namun tugas tindak lanjut gagal disinkronkan.';
+      }
     }
 
     try {
@@ -286,11 +502,16 @@ export default function TransactionForm({
         `Mengunggah laporan ${form.fullName} - ${form.transactionType}`,
       );
       setForm(blankForm);
-      setMessage({ text: 'Data laporan berhasil diupload!', type: 'success' });
+      setTaskCandidates([]);
+      setMessage({
+        text: `Data laporan berhasil diupload!${taskSyncNote}`,
+        type: taskSyncNote ? 'info' : 'success',
+      });
     } catch {
-      setMessage({ text: 'Data tersimpan ke server.', type: 'success' });
+      setMessage({ text: `Data tersimpan ke server.${taskSyncNote}`, type: 'success' });
     } finally {
       setIsSaving(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -298,33 +519,87 @@ export default function TransactionForm({
   const handleSaveEdit = async (event) => {
     event.preventDefault();
     if (!editingRecord || !canManageRecord(editingRecord)) return;
+
+    if (!editingRecord.followUpStatus) {
+      window.alert('Pilih status tindak lanjut terlebih dahulu.');
+      return;
+    }
+    if (editingRecord.followUpStatus === 'pending' && !editingRecord.followUp.trim()) {
+      window.alert('Keterangan tindak lanjut (rencana langkah berikutnya) wajib diisi jika status "Perlu Ditindaklanjuti".');
+      return;
+    }
+
+    // Konfirmasi bila perubahan menutup tugas tindak lanjut yang terhubung.
+    if (editingRecord.tindakLanjutId && editingRecord.followUpStatus === TASK_STATUS.DONE) {
+      const confirmed = window.confirm(
+        'Menyimpan perubahan ini akan menandai tugas tindak lanjut terkait sebagai selesai. Lanjutkan?',
+      );
+      if (!confirmed) return;
+    }
+
     setIsEditingSaving(true);
+    let editSyncNote = '';
 
     try {
+      const payload = {
+        full_name: editingRecord.fullName.trim(),
+        customer_type: editingRecord.customerType,
+        identity_number: editingRecord.identityNumber.trim(),
+        phone: editingRecord.phone.trim(),
+        address: editingRecord.address.trim(),
+        transaction_type: editingRecord.transactionType,
+        follow_up_status: editingRecord.followUpStatus,
+        follow_up: (editingRecord.followUp || '').trim(),
+        photo_url: editingRecord.photo,
+      };
+
       let updateQuery = supabase
         .from('laporan_rm')
-        .update({
-          full_name: editingRecord.fullName.trim(),
-          customer_type: editingRecord.customerType,
-          identity_number: editingRecord.identityNumber.trim(),
-          phone: editingRecord.phone.trim(),
-          address: editingRecord.address.trim(),
-          transaction_type: editingRecord.transactionType,
-          follow_up: editingRecord.followUp.trim(),
-          photo_url: editingRecord.photo,
-        })
+        .update(payload)
         .eq('id', editingRecord.id);
 
       if (user?.id && !isAdminRole(user.role)) {
         updateQuery = updateQuery.eq('user_id', user.id);
       }
-      const { error: dbError } = await updateQuery;
+      let { error: dbError } = await updateQuery;
+
+      if (dbError && isMissingOptionalColumn(dbError)) {
+        // Kolom hasil migration belum tersedia; simpan dengan kolom lama.
+        let legacyQuery = supabase
+          .from('laporan_rm')
+          .update(stripOptionalColumns(payload))
+          .eq('id', editingRecord.id);
+        if (user?.id && !isAdminRole(user.role)) {
+          legacyQuery = legacyQuery.eq('user_id', user.id);
+        }
+        ({ error: dbError } = await legacyQuery);
+      }
 
       if (dbError) {
         console.warn('Supabase update notice:', dbError.message);
       }
     } catch (err) {
       console.warn('Supabase update error:', err);
+    }
+
+    // Sinkronkan tugas tindak lanjut yang tertaut ke laporan ini (bila ada).
+    if (editingRecord.tindakLanjutId) {
+      try {
+        const { error: taskError } = await syncTaskFromEditedReport({
+          user,
+          taskId: editingRecord.tindakLanjutId,
+          form: editingRecord,
+          formType: editingRecord.formType || formType,
+          reportId: editingRecord.id,
+        });
+        if (taskError) {
+          console.warn('Sinkronisasi tugas setelah edit:', taskError.message);
+          editSyncNote = ' Tugas tindak lanjut gagal disinkronkan.';
+        }
+      } catch (taskErr) {
+        console.warn('Sinkronisasi tugas setelah edit error:', taskErr);
+        editSyncNote = ' Tugas tindak lanjut gagal disinkronkan.';
+      }
     }
 
     // 2. Update LocalStorage dan State
@@ -349,7 +624,10 @@ export default function TransactionForm({
 
     setIsEditingSaving(false);
     setEditingRecord(null);
-    setMessage({ text: 'Data laporan berhasil diperbarui.', type: 'success' });
+    setMessage({
+      text: `Data laporan berhasil diperbarui.${editSyncNote}`,
+      type: editSyncNote ? 'info' : 'success',
+    });
   };
 
   // Hapus data laporan
@@ -408,6 +686,12 @@ export default function TransactionForm({
       result = result.filter((r) => r.customerType === statusFilter);
     }
 
+    if (followUpFilter !== 'ALL') {
+      result = result.filter(
+        (r) => normalizeFollowUpStatus(r.followUpStatus) === followUpFilter,
+      );
+    }
+
     if (isAllReports && reportTypeFilter !== 'ALL') {
       result = result.filter((record) => record.formType === reportTypeFilter);
     }
@@ -426,7 +710,15 @@ export default function TransactionForm({
     }
 
     return result;
-  }, [sortedRecords, searchTerm, statusFilter, reportTypeFilter, isAllReports]);
+  }, [sortedRecords, searchTerm, statusFilter, followUpFilter, reportTypeFilter, isAllReports]);
+
+  // Jumlah laporan per status tindak lanjut
+  const followUpCounts = useMemo(() => {
+    const pending = sortedRecords.filter(
+      (record) => normalizeFollowUpStatus(record.followUpStatus) === 'pending',
+    ).length;
+    return { pending, done: sortedRecords.length - pending };
+  }, [sortedRecords]);
 
   const copyToClipboard = (text) => {
     navigator.clipboard?.writeText(text);
@@ -526,7 +818,18 @@ export default function TransactionForm({
 
             {/* Toggle View & User Profile */}
             <div className="flex items-center gap-2 sm:gap-2.5">
-              
+
+              {/* Tombol menu Tindak Lanjut */}
+              <button
+                type="button"
+                onClick={() => navigate('/tindak-lanjut')}
+                className="inline-flex items-center gap-1.5 h-9 sm:h-10 px-3 rounded-full border border-[#FF7401]/40 bg-[#FF7401]/10 text-[11px] font-bold text-[#B34A02] hover:bg-[#FF7401]/20 active:scale-95 transition-all cursor-pointer"
+                title="Buka menu Tindak Lanjut"
+              >
+                <Icon name="target" size={14} />
+                <span className="hidden sm:inline">Tindak Lanjut</span>
+              </button>
+
               {/* User Profile Pill */}
               <div className="flex items-center h-9 sm:h-10 gap-2 p-1 pr-3 rounded-full border border-slate-200/80 bg-white shadow-xs">
                 <span className="flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-[#014181] text-white text-xs font-bold ring-2 ring-[#FF7401]/40 overflow-hidden shrink-0">
@@ -568,6 +871,11 @@ export default function TransactionForm({
                     <span className="text-[11px] text-blue-200/80 font-medium">
                       Semua Data Tersimpan
                     </span>
+                    {followUpCounts.pending > 0 && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white/10 text-orange-200 border border-orange-300/40">
+                        {followUpCounts.pending} perlu ditindaklanjuti
+                      </span>
+                    )}
                   </div>
                   <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white drop-shadow-sm truncate">
                     {isAllReports ? 'Semua Laporan' : `Laporan ${title}`}
@@ -702,6 +1010,54 @@ export default function TransactionForm({
                 </div>
               </div>
 
+              {/* Filter Status Tindak Lanjut */}
+              <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2.5">
+                <span className="mr-0.5 text-[11px] font-bold text-slate-500">
+                  Tindak lanjut:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFollowUpFilter('ALL')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                    followUpFilter === 'ALL'
+                      ? 'bg-slate-700 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  Semua Status
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFollowUpFilter('pending')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                    followUpFilter === 'pending'
+                      ? 'bg-[#FF7401] text-white shadow-xs'
+                      : 'bg-orange-50 text-[#B34A02] hover:bg-orange-100 border border-orange-200/70'
+                  }`}
+                >
+                  <Icon name="target" size={13} />
+                  Perlu Tindak Lanjut
+                  <span className={`rounded-full px-1.5 text-[10px] ${followUpFilter === 'pending' ? 'bg-white/25' : 'bg-orange-100'}`}>
+                    {followUpCounts.pending}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFollowUpFilter('done')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+                    followUpFilter === 'done'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200/70'
+                  }`}
+                >
+                  <Icon name="check" size={13} />
+                  Sudah Selesai
+                  <span className={`rounded-full px-1.5 text-[10px] ${followUpFilter === 'done' ? 'bg-white/25' : 'bg-emerald-100'}`}>
+                    {followUpCounts.done}
+                  </span>
+                </button>
+              </div>
+
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-[11px] text-slate-500 border-t border-slate-100 pt-2 px-1">
                 <span>
                   Menampilkan <strong>{filteredRecords.length}</strong> dari{' '}
@@ -728,8 +1084,9 @@ export default function TransactionForm({
             ) : filteredRecords.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-stretch">
                 {filteredRecords.map((record, index) => {
+                  const needsFollowUp = normalizeFollowUpStatus(record.followUpStatus) === 'pending';
                   const isNewest = index === 0 && !searchTerm && statusFilter === 'ALL'
-                    && reportTypeFilter === 'ALL';
+                    && followUpFilter === 'ALL' && reportTypeFilter === 'ALL';
                   return (
                     <div
                       key={record.id}
@@ -776,6 +1133,44 @@ export default function TransactionForm({
                                 timeStyle: 'short',
                               }).format(new Date(record.createdAt))}
                             </time>
+                          </div>
+                        </div>
+
+                        {/* Strip Status Tindak Lanjut */}
+                        <div
+                          className={`flex items-start gap-2 rounded-xl px-2.5 py-2 border min-w-0 ${
+                            needsFollowUp
+                              ? 'bg-orange-50/90 border-orange-200/70'
+                              : 'bg-emerald-50/90 border-emerald-200/70'
+                          }`}
+                        >
+                          <span
+                            className={`mt-0.5 shrink-0 ${
+                              needsFollowUp ? 'text-[#FF7401]' : 'text-emerald-600'
+                            }`}
+                          >
+                            <Icon name={needsFollowUp ? 'target' : 'check'} size={14} />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p
+                              className={`text-[10px] font-extrabold uppercase tracking-wide ${
+                                needsFollowUp ? 'text-[#B34A02]' : 'text-emerald-700'
+                              }`}
+                            >
+                              {needsFollowUp ? 'Perlu Tindak Lanjut' : 'Sudah Selesai'}
+                            </p>
+                            <p
+                              className={`truncate text-[11px] ${
+                                needsFollowUp
+                                  ? 'font-semibold text-[#8A3A02]'
+                                  : 'text-emerald-700/80'
+                              }`}
+                              title={needsFollowUp ? record.followUp || '' : ''}
+                            >
+                              {needsFollowUp
+                                ? record.followUp || 'Keterangan belum diisi'
+                                : 'Tidak perlu keterangan tambahan'}
+                            </p>
                           </div>
                         </div>
 
@@ -828,20 +1223,13 @@ export default function TransactionForm({
                           </div>
                         </div>
 
-                        {/* Alamat & Follow Up Snippet Box */}
-                        <div className="bg-slate-50/90 rounded-xl p-2.5 border border-slate-100 text-[11px] text-slate-600 space-y-1 min-w-0 overflow-hidden">
+                        {/* Alamat Snippet Box */}
+                        <div className="bg-slate-50/90 rounded-xl p-2.5 border border-slate-100 text-[11px] text-slate-600 min-w-0 overflow-hidden">
                           <div className="flex items-start gap-1.5 min-w-0">
                             <Icon name="pin" size={13} className="shrink-0 text-slate-400" />
                             <p className="truncate min-w-0 flex-1">
                               <strong className="text-slate-700">Alamat:</strong>{' '}
                               {record.address || '-'}
-                            </p>
-                          </div>
-                          <div className="flex items-start gap-1.5 min-w-0">
-                            <Icon name="target" size={13} className="shrink-0 text-[#FF7401]" />
-                            <p className="truncate min-w-0 flex-1">
-                              <strong className="text-[#FF7401]">Tindak Lanjut:</strong>{' '}
-                              {record.followUp || '-'}
                             </p>
                           </div>
                         </div>
@@ -864,7 +1252,7 @@ export default function TransactionForm({
                           <>
                             <button
                               type="button"
-                              onClick={() => setEditingRecord({ ...record })}
+                              onClick={() => startEditingRecord(record)}
                               className="flex-1 py-1.5 px-2.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-600 hover:text-white border border-amber-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
                             >
                               <Icon name="edit" size={13} />
@@ -892,13 +1280,13 @@ export default function TransactionForm({
                   <Icon name="clipboard" size={22} />
                 </div>
                 <h3 className="text-sm sm:text-base font-bold text-slate-700">
-                  {searchTerm || statusFilter !== 'ALL' || reportTypeFilter !== 'ALL'
+                  {searchTerm || statusFilter !== 'ALL' || followUpFilter !== 'ALL' || reportTypeFilter !== 'ALL'
                     ? 'Tidak ada data laporan yang cocok'
                     : 'Belum Ada Laporan Tersimpan'}
                 </h3>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                  {searchTerm || statusFilter !== 'ALL' || reportTypeFilter !== 'ALL'
-                    ? 'Coba ganti kata kunci pencarian atau ubah filter status nasabah.'
+                  {searchTerm || statusFilter !== 'ALL' || followUpFilter !== 'ALL' || reportTypeFilter !== 'ALL'
+                    ? 'Coba ganti kata kunci pencarian atau ubah filter status nasabah / tindak lanjut.'
                     : 'Mulai dokumentasikan aktivitas transaksi nasabah Anda melalui formulir input.'}
                 </p>
                 {!isAllReports && (
@@ -1079,7 +1467,7 @@ export default function TransactionForm({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="block text-xs font-bold text-slate-700">
-                      {transactionLabel} <span className="text-red-500">*</span>
+                      {transactionLabel} (Aktivitas) <span className="text-red-500">*</span>
                     </label>
                     <select
                       name="transactionType"
@@ -1101,19 +1489,145 @@ export default function TransactionForm({
 
                   <div className="space-y-1.5">
                     <label className="block text-xs font-bold text-slate-700">
-                      Rencana Tindak Lanjut (Follow-Up) <span className="text-red-500">*</span>
+                      Status Tindak Lanjut <span className="text-red-500">*</span>
                     </label>
-                    <input
-                      type="text"
-                      name="followUp"
-                      value={form.followUp}
-                      onChange={updateField}
-                      placeholder="Contoh: Jadwalkan akad kredit / ambil berkas"
+                    <select
+                      name="followUpStatus"
+                      value={form.followUpStatus}
+                      onChange={handleFollowUpStatusChange}
                       required
-                      className="w-full px-3.5 py-2.5 text-xs bg-slate-50/70 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 focus:border-[#014181] text-slate-800 transition-all placeholder:text-slate-400"
-                    />
+                      className="w-full px-3.5 py-2.5 text-xs bg-slate-50/70 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 focus:border-[#014181] text-slate-800 transition-all"
+                    >
+                      <option value="" disabled>
+                        Pilih status tindak lanjut
+                      </option>
+                      {FOLLOW_UP_STATUS_OPTIONS.map((opt) => (
+                        <option value={opt.value} key={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400">
+                      {FOLLOW_UP_STATUS_OPTIONS.find((opt) => opt.value === form.followUpStatus)?.hint
+                        || 'Pilih status tindak lanjut: Perlu Ditindaklanjuti atau Selesai.'}
+                    </p>
                   </div>
                 </div>
+
+                {/* Keterangan Tindak Lanjut: Kondisional sesuai status yang dipilih */}
+                {form.followUpStatus === 'pending' && (
+                  <div className="space-y-1.5 animate-in fade-in duration-200">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Keterangan Tindak Lanjut (Rencana Langkah Berikutnya) <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      name="followUp"
+                      rows="2"
+                      value={form.followUp}
+                      onChange={updateField}
+                      placeholder="Contoh: Jadwalkan akad kredit / ambil kelengkapan berkas minggu depan"
+                      required
+                      className="w-full px-3.5 py-2.5 text-xs bg-slate-50/70 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 focus:border-[#014181] text-slate-800 transition-all placeholder:text-slate-400 resize-none"
+                    />
+                    <p className="text-[10px] font-semibold text-[#B34A02]">
+                      Wajib diisi karena status &quot;Perlu Ditindaklanjuti&quot; dipilih. Tugas akan masuk ke daftar aktif menu Tindak Lanjut.
+                    </p>
+                  </div>
+                )}
+
+                {form.followUpStatus === 'done' && (
+                  <div className="space-y-1.5 animate-in fade-in duration-200">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Keterangan Penyelesaian (Hasil Penyelesaian)
+                    </label>
+                    <textarea
+                      name="followUp"
+                      rows="2"
+                      value={form.followUp}
+                      onChange={updateField}
+                      placeholder="Contoh: Berkas telah lengkap dan rekening/fasilitas berhasil diproses dengan tuntas."
+                      className="w-full px-3.5 py-2.5 text-xs bg-slate-50/70 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 focus:border-[#014181] text-slate-800 transition-all placeholder:text-slate-400 resize-none"
+                    />
+                    <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                      <span className="mt-0.5 shrink-0 text-emerald-600">
+                        <Icon name="check" size={14} />
+                      </span>
+                      <p className="text-[11px] font-semibold text-emerald-700">
+                        Status &quot;Selesai&quot; dipilih — pekerjaan ditandai tuntas. Anda dapat mencatat keterangan penyelesaian di atas jika diperlukan.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Hubungkan laporan ke tugas tindak lanjut yang masih aktif */}
+                {(isLoadingTaskCandidates || taskCandidates.length > 0) && (
+                  <div className="space-y-2.5 rounded-2xl border border-[#014181]/15 bg-blue-50/60 p-3.5">
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 shrink-0 text-[#014181]">
+                        <Icon name="target" size={15} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-[#014181]">
+                          Lanjutkan tugas tindak lanjut yang sudah ada?
+                        </p>
+                        <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500">
+                          Ditemukan tugas aktif untuk nasabah ini. Pilih tugas yang benar bila ada lebih
+                          dari satu. Laporan tetap tersimpan sebagai catatan baru.
+                        </p>
+                      </div>
+                    </div>
+
+                    {isLoadingTaskCandidates ? (
+                      <p className="text-[11px] font-semibold text-slate-500" role="status">
+                        Mencari tugas aktif nasabah ini...
+                      </p>
+                    ) : (
+                      <select
+                        name="linkedTaskId"
+                        value={form.linkedTaskId}
+                        onChange={updateField}
+                        className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800"
+                      >
+                        <option value="">Tidak terhubung — simpan sebagai laporan biasa</option>
+                        {taskCandidates.map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {`${task.activity || 'Pekerjaan'} • ${task.note || 'Tanpa keterangan'} • ${formatJakartaDate(task.lastReportAt)}`}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {linkedTask && (
+                      <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-2.5 text-[11px] text-slate-600">
+                        <p className="truncate font-bold text-[#014181]">{linkedTask.customerName}</p>
+                        <p className="truncate">
+                          Rek/NIK: <span className="font-mono">{maskIdentity(linkedTask.customerIdentity)}</span>
+                        </p>
+                        <p className="truncate">Pekerjaan: {linkedTask.activity || '-'}</p>
+                        <p className="truncate">Keterangan: {linkedTask.note || '-'}</p>
+                        <p className="truncate">Laporan terakhir: {formatJakartaDate(linkedTask.lastReportAt)}</p>
+                        {form.followUpStatus === TASK_STATUS.DONE ? (
+                          <p className="pt-0.5 font-bold text-[#B34A02]">
+                            Tugas ini akan ditutup setelah laporan disimpan.
+                          </p>
+                        ) : (
+                          <p className="pt-0.5 font-bold text-[#014181]">
+                            Keterangan dan tanggal tugas ini akan diperbarui.
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((current) => ({ ...current, linkedTaskId: '' }))
+                          }
+                          className="mt-1 text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                        >
+                          Batalkan tautan
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Row 4: Alamat Domisili */}
                 <div className="space-y-1.5">
@@ -1271,8 +1785,20 @@ export default function TransactionForm({
                 <td>{selectedDetailRecord.transactionType || '-'}</td>
               </tr>
               <tr>
-                <th>Rencana Tindak Lanjut</th>
-                <td>{selectedDetailRecord.followUp || '-'}</td>
+                <th>Status Tindak Lanjut</th>
+                <td>
+                  {normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending'
+                    ? 'Perlu Tindak Lanjut'
+                    : 'Sudah Selesai'}
+                </td>
+              </tr>
+              <tr>
+                <th>Keterangan Tindak Lanjut</th>
+                <td>
+                  {normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending'
+                    ? selectedDetailRecord.followUp || '-'
+                    : 'Tidak diperlukan'}
+                </td>
               </tr>
               <tr>
                 <th>Waktu Pencatatan</th>
@@ -1334,7 +1860,7 @@ export default function TransactionForm({
                 <h2 className="text-base sm:text-lg font-bold text-[#014181] mt-0.5 truncate">
                   {selectedDetailRecord.fullName}
                 </h2>
-                <div className="flex items-center gap-2 mt-1">
+                <div className="flex flex-wrap items-center gap-2 mt-1">
                   <span
                     className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${
                       selectedDetailRecord.customerType === 'Nasabah'
@@ -1346,6 +1872,25 @@ export default function TransactionForm({
                   </span>
                   <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-[#014181] border border-blue-200">
                     {selectedDetailRecord.transactionType}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${
+                      normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending'
+                        ? 'bg-orange-50 text-[#B34A02] border-orange-200'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}
+                  >
+                    <Icon
+                      name={
+                        normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending'
+                          ? 'target'
+                          : 'check'
+                      }
+                      size={11}
+                    />
+                    {normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending'
+                      ? 'Perlu Tindak Lanjut'
+                      : 'Sudah Selesai'}
                   </span>
                 </div>
               </div>
@@ -1432,9 +1977,33 @@ export default function TransactionForm({
                   <span className="text-[11px] font-semibold text-slate-500 block mb-1">
                     Rencana Tindak Lanjut (Follow-Up)
                   </span>
-                  <p className="text-xs text-slate-800 bg-white p-2.5 rounded-xl border border-orange-200/60 text-[#FF7401] font-semibold break-words">
-                    {selectedDetailRecord.followUp || 'Tidak ada rencana tindak lanjut.'}
-                  </p>
+                  {normalizeFollowUpStatus(selectedDetailRecord.followUpStatus) === 'pending' ? (
+                    <>
+                      <p className="text-xs text-slate-800 bg-white p-2.5 rounded-xl border border-orange-200/60 text-[#FF7401] font-semibold break-words">
+                        {selectedDetailRecord.followUp || 'Keterangan tindak lanjut belum diisi.'}
+                      </p>
+                      <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-[#B34A02]">
+                        <Icon name="target" size={11} />
+                        Masih perlu ditindaklanjuti
+                      </p>
+                    </>
+                  ) : (
+                    <div className="space-y-1.5 rounded-xl border border-emerald-200 bg-emerald-50 p-2.5">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                        <Icon name="check" size={14} />
+                        <span>Pekerjaan Selesai</span>
+                      </div>
+                      {selectedDetailRecord.followUp ? (
+                        <p className="rounded-lg bg-white p-2 text-xs text-slate-700 break-words border border-emerald-100 leading-relaxed">
+                          {selectedDetailRecord.followUp}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-emerald-700">
+                          Pekerjaan ditandai selesai tanpa catatan tambahan.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between pt-1 text-[11px] text-slate-400">
@@ -1486,7 +2055,7 @@ export default function TransactionForm({
                 <button
                   type="button"
                   onClick={() => {
-                    setEditingRecord({ ...selectedDetailRecord });
+                    startEditingRecord(selectedDetailRecord);
                   }}
                   className="px-3.5 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center gap-1"
                 >
@@ -1644,17 +2213,65 @@ export default function TransactionForm({
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-xs font-bold text-slate-700">Tindak Lanjut</label>
-                  <input
-                    type="text"
-                    name="followUp"
-                    value={editingRecord.followUp}
-                    onChange={updateEditingField}
+                  <label className="block text-xs font-bold text-slate-700">Status Tindak Lanjut</label>
+                  <select
+                    name="followUpStatus"
+                    value={editingRecord.followUpStatus}
+                    onChange={handleEditingFollowUpStatusChange}
                     required
                     className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800"
-                  />
+                  >
+                    {FOLLOW_UP_STATUS_OPTIONS.map((opt) => (
+                      <option value={opt.value} key={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
+
+              {/* Keterangan tindak lanjut: kondisional sesuai status */}
+              {normalizeFollowUpStatus(editingRecord.followUpStatus) === 'pending' ? (
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Keterangan Tindak Lanjut (Rencana Langkah Berikutnya) <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    name="followUp"
+                    rows="2"
+                    value={editingRecord.followUp || ''}
+                    onChange={updateEditingField}
+                    placeholder="Contoh: Jadwalkan akad kredit / ambil berkas minggu depan"
+                    required
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800 resize-none"
+                  />
+                  <p className="text-[10px] font-semibold text-[#B34A02]">
+                    Wajib diisi karena status &quot;Perlu Ditindaklanjuti&quot; dipilih.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Keterangan Penyelesaian (Hasil Penyelesaian)
+                  </label>
+                  <textarea
+                    name="followUp"
+                    rows="2"
+                    value={editingRecord.followUp || ''}
+                    onChange={updateEditingField}
+                    placeholder="Contoh: Berkas telah lengkap dan rekening/fasilitas berhasil diproses dengan tuntas."
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800 resize-none"
+                  />
+                  <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <span className="mt-0.5 shrink-0 text-emerald-600">
+                      <Icon name="check" size={14} />
+                    </span>
+                    <p className="text-[11px] font-semibold text-emerald-700">
+                      Status &quot;Selesai&quot; dipilih. Anda dapat mencatat keterangan penyelesaian jika diperlukan.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="block text-xs font-bold text-slate-700">Alamat Lengkap</label>

@@ -9,6 +9,7 @@ import {
   recordActivity,
   subscribeToActivities,
 } from '../auth/activityLog.js';
+import { countActiveTasks } from '../../services/tindakLanjut.js';
 
 const menuItems = [
   {
@@ -30,7 +31,19 @@ const menuItems = [
 export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavigate }) {
   const [showProfile, setShowProfile] = useState(false);
   const [activities, setActivities] = useState(() => getUserActivities(user));
+  const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let isMounted = true;
+    countActiveTasks(user).then((count) => {
+      if (isMounted) setActiveTaskCount(count);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
 
   useEffect(() => {
     let isMounted = true;
@@ -53,9 +66,9 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const navigateTo = (page, label, options) => {
+  const navigateTo = (page, label) => {
     recordActivity(user, 'Membuka menu', `Membuka menu ${label}`);
-    onNavigate(page, options);
+    onNavigate(page);
   };
 
   const handleLogout = () => {
@@ -88,19 +101,21 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
             </p>
           </section>
 
-          <section aria-label="Menu laporan" className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
+          <section aria-label="Menu laporan dan tindak lanjut" className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
             {menuItems.map((item) => (
               <article
                 key={item.page}
-                className="rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-sm sm:rounded-3xl sm:p-5"
+                className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-sm sm:rounded-3xl sm:p-5"
               >
-                <div className="flex items-start gap-3">
-                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#014181]/5 text-[#014181]" aria-hidden="true">
-                    <Icon name={item.icon} size={22} />
-                  </span>
-                  <div>
-                    <h2 className="text-sm font-extrabold text-[#014181]">{item.label}</h2>
-                    <p className="mt-1 text-xs leading-relaxed text-slate-500">{item.description}</p>
+                <div>
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#014181]/5 text-[#014181]" aria-hidden="true">
+                      <Icon name={item.icon} size={22} />
+                    </span>
+                    <div>
+                      <h2 className="text-sm font-extrabold text-[#014181]">{item.label}</h2>
+                      <p className="mt-1 text-xs leading-relaxed text-slate-500">{item.description}</p>
+                    </div>
                   </div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-2">
@@ -113,9 +128,7 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigateTo(item.reportPage, `Laporan ${item.label}`, {
-                      state: { returnToDashboard: true },
-                    })}
+                    onClick={() => navigateTo(item.reportPage, `Laporan ${item.label}`)}
                     className="rounded-xl border border-[#014181]/25 bg-blue-50 px-3 py-2.5 text-xs font-bold text-[#014181] transition hover:bg-blue-100"
                   >
                     Lihat Laporan
@@ -123,6 +136,42 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
                 </div>
               </article>
             ))}
+
+            {/* KARTU MENU KHUSUS TINDAK LANJUT */}
+            <article className="flex flex-col justify-between rounded-2xl border border-orange-200/80 bg-gradient-to-br from-white via-orange-50/30 to-white p-4 shadow-sm sm:rounded-3xl sm:p-5">
+              <div>
+                <div className="flex items-start justify-between gap-3">
+                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-orange-100 text-[#FF7401]" aria-hidden="true">
+                    <Icon name="target" size={22} />
+                  </span>
+                  {activeTaskCount > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-[11px] font-extrabold text-[#B34A02]">
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#FF7401]" />
+                      {activeTaskCount} aktif
+                    </span>
+                  )}
+                </div>
+                <h2 className="mt-3 text-sm font-extrabold text-[#014181]">Tindak Lanjut</h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  Pantau dan kelola pekerjaan nasabah yang masih perlu ditindaklanjuti hingga tuntas.
+                </p>
+              </div>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => navigateTo('tindak-lanjut', 'Tindak Lanjut')}
+                  className="w-full rounded-xl bg-[#FF7401] px-3 py-2.5 text-xs font-bold text-white transition hover:bg-[#E56801] shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Icon name="target" size={15} />
+                  <span>Buka Tindak Lanjut</span>
+                  {activeTaskCount > 0 && (
+                    <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-extrabold">
+                      {activeTaskCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            </article>
           </section>
 
           <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-sm sm:rounded-3xl sm:p-5">

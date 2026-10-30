@@ -1,10 +1,13 @@
+import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Icon from '../../components/Icon.jsx';
+import { countActiveTasks } from '../../services/tindakLanjut.js';
 import { recordActivity } from '../auth/activityLog.js';
 
 const navigationItems = [
   { label: 'Dashboard', href: '/', icon: 'chart' },
   { label: 'Semua laporan', href: '/rmft?view=reports&scope=all', icon: 'clipboard' },
+  { label: 'Tindak lanjut', href: '/tindak-lanjut', icon: 'target' },
   { label: 'Pengelolaan pegawai', href: '/employees', icon: 'user' },
   { label: 'Aktivitas pengguna', href: '/activity', icon: 'activity' },
 ];
@@ -20,6 +23,21 @@ function isNavigationItemActive(item, pathname, search) {
 
 export default function AdminLayout({ user, onRequestLogout, children }) {
   const location = useLocation();
+  const [activeTaskCount, setActiveTaskCount] = useState(0);
+
+  // Badge jumlah tugas tindak lanjut yang masih aktif.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    let isMounted = true;
+
+    countActiveTasks(user).then((count) => {
+      if (isMounted) setActiveTaskCount(count);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, location.pathname]);
 
   const navigateTo = (item) => {
     recordActivity(user, 'Membuka menu', `Membuka menu ${item.label}`);
@@ -69,6 +87,11 @@ export default function AdminLayout({ user, onRequestLogout, children }) {
               >
                 <Icon name={item.icon} size={17} />
                 {item.label}
+                {item.href === '/tindak-lanjut' && activeTaskCount > 0 && (
+                  <span className="ml-auto rounded-full bg-[#FF7401] px-1.5 py-0.5 text-[10px] font-extrabold text-white">
+                    {activeTaskCount}
+                  </span>
+                )}
               </Link>
             );
           })}

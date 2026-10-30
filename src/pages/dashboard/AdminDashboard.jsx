@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import Navbar from '../../components/Navbar.jsx';
 import ProfileModal from '../../components/ProfileModal.jsx';
 import { recordActivity } from '../auth/activityLog.js';
 import { isAdminRole } from '../../config/rolesConfig.jsx';
 import { supabase } from '../../config/supabaseClient.js';
+import { countActiveTasks } from '../../services/tindakLanjut.js';
 
 export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
   const [showProfile, setShowProfile] = useState(false);
@@ -11,6 +13,7 @@ export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [yearDropdownOpen, setYearDropdownOpen] = useState(false);
   const [adminStats, setAdminStats] = useState({ rmft: 0, rmkredit: 0 });
+  const [activeTaskCount, setActiveTaskCount] = useState(0);
   const [yearlyChartData, setYearlyChartData] = useState({});
 
   useEffect(() => {
@@ -57,6 +60,20 @@ export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
     }
 
     loadAdminData();
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
+
+  // Jumlah tugas tindak lanjut yang masih aktif (seluruh RM untuk admin).
+  useEffect(() => {
+    if (!isAdminRole(user?.role)) return undefined;
+    let isMounted = true;
+
+    countActiveTasks(user).then((count) => {
+      if (isMounted) setActiveTaskCount(count);
+    });
+
     return () => {
       isMounted = false;
     };
@@ -116,11 +133,12 @@ export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
             </div>
           </section>
 
-          <section aria-label="Ringkasan laporan" className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+          <section aria-label="Ringkasan laporan" className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
             {[
               { label: 'Total Laporan', value: adminStats.rmft + adminStats.rmkredit },
               { label: 'Laporan RMFT', value: adminStats.rmft },
               { label: 'Laporan RM Kredit', value: adminStats.rmkredit },
+              { label: 'Tugas Tindak Lanjut Aktif', value: activeTaskCount, href: '/tindak-lanjut' },
             ].map((item) => (
               <div
                 key={item.label}
@@ -132,6 +150,14 @@ export default function AdminDashboard({ user, onLogout, onUpdateUser }) {
                 <strong className="mt-1 block text-2xl font-extrabold text-[#014181]">
                   {item.value}
                 </strong>
+                {item.href && (
+                  <Link
+                    to={item.href}
+                    className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-[#B34A02] hover:underline"
+                  >
+                    Pantau tugas
+                  </Link>
+                )}
               </div>
             ))}
           </section>
