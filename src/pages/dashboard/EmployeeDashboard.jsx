@@ -78,7 +78,14 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-[#C9DCEF] pb-12 font-sans text-slate-800">
-      <div className="fixed inset-0 pointer-events-none bg-gradient-to-b from-[#C9DCEF] via-[#A9C6E5] to-[#C9DCEF]" aria-hidden="true" />
+      <div
+        className="pointer-events-none fixed inset-0"
+        style={{
+          background:
+            'radial-gradient(ellipse at 12% 0%, rgba(255, 255, 255, 0.9), transparent 36%), radial-gradient(ellipse at 92% 14%, rgba(255, 116, 1, 0.1), transparent 27%), radial-gradient(ellipse at 78% 82%, rgba(1, 65, 129, 0.1), transparent 38%), linear-gradient(135deg, #edf5fc 0%, #dceaf7 48%, #eaf3fb 100%)',
+        }}
+        aria-hidden="true"
+      />
       <div className="relative z-10">
         <Navbar
           user={user}
@@ -128,7 +135,10 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigateTo(item.reportPage, `Laporan ${item.label}`)}
+                    onClick={() => {
+                      recordActivity(user, 'Membuka menu', `Membuka menu Laporan ${item.label}`);
+                      onNavigate(item.reportPage, { state: { returnToDashboard: true } });
+                    }}
                     className="rounded-xl border border-[#014181]/25 bg-blue-50 px-3 py-2.5 text-xs font-bold text-[#014181] transition hover:bg-blue-100"
                   >
                     Lihat Laporan

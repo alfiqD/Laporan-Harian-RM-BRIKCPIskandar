@@ -468,3 +468,24 @@ export async function closeTask({ user, task, note }) {
 
   return { data: normalizeTask(data), error: null };
 }
+
+/** Hapus tugas beserta laporan dan riwayat terkait dalam satu transaksi database. */
+export async function deleteTaskAndReports(taskId) {
+  if (!taskId) {
+    return { deletedReportCount: null, error: new Error('Tugas tidak ditemukan.') };
+  }
+
+  const { data, error } = await supabase.rpc('delete_tindak_lanjut_with_reports', {
+    p_task_id: taskId,
+  });
+
+  if (error) return { deletedReportCount: null, error };
+  if (!Number.isInteger(data)) {
+    return {
+      deletedReportCount: null,
+      error: new Error('Server tidak mengembalikan jumlah laporan yang dihapus.'),
+    };
+  }
+
+  return { deletedReportCount: data, error: null };
+}

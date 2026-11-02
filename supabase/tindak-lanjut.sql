@@ -18,6 +18,7 @@
 --   3. tabel tindak_lanjut          -> satu baris = satu tugas
 --   4. tabel tindak_lanjut_riwayat  -> jejak audit perubahan tugas
 --   5. RLS: RM hanya akses miliknya, Admin sesuai role yang sudah ada
+--   6. RPC penghapusan tugas, laporan terkait, dan riwayat secara atomik
 --
 -- CATATAN PENTING
 --   * Nomor rekening / NIK TIDAK dipakai sebagai primary key.
@@ -222,10 +223,76 @@ with check (
 );
 
 -- ------------------------------------------------------------
--- 7) Hak akses tabel (RLS tetap yang menentukan baris mana)
+-- 7) Penghapusan permanen tugas beserta data terkait secara atomik
+-- ------------------------------------------------------------
+create or replace function public.delete_tindak_lanjut_with_reports(p_task_id uuid)
+returns integer
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  v_task public.tindak_lanjut%rowtype;
+  v_expected_report_count integer;
+  v_deleted_report_count integer;
+begin
+  select *
+  into v_task
+  from public.tindak_lanjut
+  where id = p_task_id
+  for update;
+
+  if not found then
+    raise exception 'Tugas tidak ditemukan atau Anda tidak memiliki akses.'
+      using errcode = 'P0002';
+  end if;
+
+  select count(*)
+  into v_expected_report_count
+  from public.laporan_rm r
+  where r.tindak_lanjut_id = p_task_id
+    or r.id in (v_task.source_report_id, v_task.last_report_id)
+    or exists (
+      select 1
+      from public.tindak_lanjut_riwayat h
+      where h.tindak_lanjut_id = p_task_id
+        and h.report_id = r.id
+    );
+
+  delete from public.laporan_rm r
+  where r.tindak_lanjut_id = p_task_id
+    or r.id in (v_task.source_report_id, v_task.last_report_id)
+    or exists (
+      select 1
+      from public.tindak_lanjut_riwayat h
+      where h.tindak_lanjut_id = p_task_id
+        and h.report_id = r.id
+    );
+
+  get diagnostics v_deleted_report_count = row_count;
+  if v_deleted_report_count <> v_expected_report_count then
+    raise exception 'Tidak semua laporan terkait dapat dihapus. Periksa hak akses Anda.'
+      using errcode = '42501';
+  end if;
+
+  delete from public.tindak_lanjut
+  where id = p_task_id;
+
+  if not found then
+    raise exception 'Tugas gagal dihapus.'
+      using errcode = '42501';
+  end if;
+
+  return v_deleted_report_count;
+end;
+$$;
+
+-- ------------------------------------------------------------
+-- 8) Hak akses tabel (RLS tetap yang menentukan baris mana)
 -- ------------------------------------------------------------
 grant select, insert, update, delete on public.tindak_lanjut to authenticated;
 grant select, insert on public.tindak_lanjut_riwayat to authenticated;
+grant execute on function public.delete_tindak_lanjut_with_reports(uuid) to authenticated;
 
 commit;
 

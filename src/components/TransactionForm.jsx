@@ -1,12 +1,9 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../config/supabaseClient.js';
 import { recordActivity } from '../pages/auth/activityLog.js';
 import { isAdminRole } from '../config/rolesConfig.jsx';
 import {
-  fetchTaskCandidates,
-  formatJakartaDate,
-  maskIdentity,
   setReportTaskLink,
   syncTaskFromEditedReport,
   syncTaskWithReport,
@@ -40,7 +37,6 @@ const blankForm = {
   transactionType: '',
   followUpStatus: '',
   followUp: '',
-  linkedTaskId: '',
   photo: '',
   photoName: '',
 };
@@ -90,6 +86,7 @@ export default function TransactionForm({
   const isAllReports = isAdminRole(user?.role)
     && new URLSearchParams(window.location.search).get('scope') === 'all';
   const returnToDashboard = location.state?.returnToDashboard === true;
+  const [linkedTask, setLinkedTask] = useState(() => location.state?.prefillTask || null);
   // View mode: 'form' (input formulir) atau 'reports' (halaman kartu laporan)
   const [viewMode, setViewMode] = useState(
     new URLSearchParams(window.location.search).get('view') === 'reports' ? 'reports' : 'form',
@@ -105,7 +102,6 @@ export default function TransactionForm({
       identityNumber: task.customerIdentity || '',
       phone: task.phone || '',
       transactionType: task.activity || '',
-      linkedTaskId: task.id || '',
     };
   });
   const [records, setRecords] = useState(() => readSavedRecords(user, isAllReports ? 'all' : formType));
@@ -122,17 +118,7 @@ export default function TransactionForm({
   const [copiedId, setCopiedId] = useState(false);
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [reportsLoadError, setReportsLoadError] = useState('');
-  const [taskCandidates, setTaskCandidates] = useState(() => {
-    const task = location.state?.prefillTask;
-    return task ? [task] : [];
-  });
-  const [isLoadingTaskCandidates, setIsLoadingTaskCandidates] = useState(false);
   const submitLockRef = useRef(false);
-
-  const linkedTask = useMemo(
-    () => taskCandidates.find((task) => task.id === form.linkedTaskId) || null,
-    [taskCandidates, form.linkedTaskId],
-  );
 
   const isRMFT = formType === 'rmft';
   const editingIsRMFT = (editingRecord?.formType || formType) === 'rmft';
@@ -193,10 +179,14 @@ export default function TransactionForm({
           if (result.error) throw result.error;
           data = result.data || [];
         } else {
-          const { data: page, error } = await supabase
+          let reportQuery = supabase
             .from('laporan_rm')
             .select('*')
-            .eq('form_type', formType)
+            .eq('form_type', formType);
+          if (!isAdminRole(user.role)) {
+            reportQuery = reportQuery.eq('user_id', user.id);
+          }
+          const { data: page, error } = await reportQuery
             .order('created_at', { ascending: false })
             .limit(100);
           if (error) throw error;
@@ -234,38 +224,6 @@ export default function TransactionForm({
     }
     fetchReports();
   }, [user, formType, isAllReports]);
-
-  // Cari tugas tindak lanjut aktif milik nasabah yang sedang diinput.
-  // Hanya sebagai kandidat — tidak pernah menutup tugas secara otomatis.
-  useEffect(() => {
-    if (viewMode !== 'form' || !user?.id) return undefined;
-    const identity = form.identityNumber.trim();
-    const name = form.fullName.trim();
-    const shouldSearch = identity.length >= 4 || name.length >= 3;
-
-    let isActive = true;
-    const timer = setTimeout(async () => {
-      if (!isActive) return;
-      if (!shouldSearch) {
-        setTaskCandidates([]);
-        return;
-      }
-      setIsLoadingTaskCandidates(true);
-      const rows = await fetchTaskCandidates({
-        user,
-        customerIdentity: identity,
-        customerName: name,
-      });
-      if (!isActive) return;
-      setTaskCandidates(rows);
-      setIsLoadingTaskCandidates(false);
-    }, 450);
-
-    return () => {
-      isActive = false;
-      clearTimeout(timer);
-    };
-  }, [viewMode, user, form.identityNumber, form.fullName]);
 
   const updateField = (event) => {
     const { name, value } = event.target;
@@ -502,7 +460,7 @@ export default function TransactionForm({
         `Mengunggah laporan ${form.fullName} - ${form.transactionType}`,
       );
       setForm(blankForm);
-      setTaskCandidates([]);
+      setLinkedTask(null);
       setMessage({
         text: `Data laporan berhasil diupload!${taskSyncNote}`,
         type: taskSyncNote ? 'info' : 'success',
@@ -673,10 +631,13 @@ export default function TransactionForm({
 
   // Urutan data: data paling baru diupload selalu berada di paling atas
   const sortedRecords = useMemo(() => {
-    return [...records].sort(
+    const visibleRecords = isAdminRole(user?.role)
+      ? records
+      : records.filter((record) => record.userId === user?.id);
+    return [...visibleRecords].sort(
       (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
     );
-  }, [records]);
+  }, [records, user]);
 
   // Filter pencarian dan status nasabah
   const filteredRecords = useMemo(() => {
@@ -855,7 +816,7 @@ export default function TransactionForm({
             TAMPILAN 1: HALAMAN LAPORAN DALAM BENTUK CARD (viewMode === 'reports')
             ============================================================ */}
         {viewMode === 'reports' ? (
-          <div className="max-w-4xl mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 space-y-4 sm:space-y-5 animate-in fade-in duration-300">
+          <div className="max-w-6xl mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 space-y-4 sm:space-y-5 animate-in fade-in duration-300">
             {/* Hero Banner Laporan */}
             <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden bg-gradient-to-br from-[#014181] via-[#002D5B] to-[#001D3D] text-white p-5 sm:p-7 shadow-[0_20px_50px_-15px_rgba(1,65,129,0.5)] border border-blue-900/30">
               <div className="absolute -top-16 -right-16 w-56 h-56 bg-[#FF7401]/25 rounded-full blur-3xl pointer-events-none" />
@@ -869,13 +830,8 @@ export default function TransactionForm({
                       {isAllReports ? 'Rekap Gabungan' : isRMFT ? 'Rekap Funding' : 'Rekap Kredit'}
                     </span>
                     <span className="text-[11px] text-blue-200/80 font-medium">
-                      Semua Data Tersimpan
+                      {isAllReports ? 'Semua data tersimpan' : 'Ruang kerja laporan Anda'}
                     </span>
-                    {followUpCounts.pending > 0 && (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white/10 text-orange-200 border border-orange-300/40">
-                        {followUpCounts.pending} perlu ditindaklanjuti
-                      </span>
-                    )}
                   </div>
                   <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white drop-shadow-sm truncate">
                     {isAllReports ? 'Semua Laporan' : `Laporan ${title}`}
@@ -883,8 +839,19 @@ export default function TransactionForm({
                   <p className="text-xs text-blue-100/80 max-w-xl leading-relaxed">
                     {isAllReports
                       ? 'Daftar gabungan laporan RMFT dan RM Kredit dari seluruh pegawai, diurutkan dari yang terbaru.'
-                      : 'Daftar seluruh laporan nasabah. Data paling atas merupakan laporan terbaru.'}
+                      : 'Kelola laporan yang Anda buat. Buka detail atau edit laporan kapan saja.'}
                   </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <span className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] font-bold text-white">
+                      {sortedRecords.length} laporan
+                    </span>
+                    <span className="rounded-full border border-orange-300/30 bg-orange-400/10 px-2.5 py-1 text-[10px] font-bold text-orange-100">
+                      {followUpCounts.pending} perlu tindak lanjut
+                    </span>
+                    <span className="rounded-full border border-emerald-300/30 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-bold text-emerald-100">
+                      {followUpCounts.done} selesai
+                    </span>
+                  </div>
                 </div>
 
                 {!isAllReports && (
@@ -1061,7 +1028,7 @@ export default function TransactionForm({
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 text-[11px] text-slate-500 border-t border-slate-100 pt-2 px-1">
                 <span>
                   Menampilkan <strong>{filteredRecords.length}</strong> dari{' '}
-                  <strong>{records.length}</strong> total laporan
+                  <strong>{sortedRecords.length}</strong> total laporan
                 </span>
                 <span className="text-[#FF7401] font-semibold flex items-center gap-1">
                   <span>↓</span>
@@ -1082,7 +1049,7 @@ export default function TransactionForm({
                 Memuat laporan...
               </p>
             ) : filteredRecords.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 items-stretch">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 items-stretch">
                 {filteredRecords.map((record, index) => {
                   const needsFollowUp = normalizeFollowUpStatus(record.followUpStatus) === 'pending';
                   const isNewest = index === 0 && !searchTerm && statusFilter === 'ALL'
@@ -1090,12 +1057,20 @@ export default function TransactionForm({
                   return (
                     <div
                       key={record.id}
-                      className={`relative bg-white rounded-2xl p-4 sm:p-5 shadow-sm border transition-all duration-200 hover:shadow-md flex flex-col justify-between overflow-hidden min-w-0 ${
+                      className={`relative bg-white rounded-2xl p-4 sm:p-5 shadow-sm border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg flex flex-col justify-between overflow-hidden min-w-0 ${
                         isNewest
-                          ? 'border-[#FF7401]/70 ring-1 ring-[#FF7401]/30 bg-gradient-to-b from-orange-50/20 via-white to-white'
-                          : 'border-slate-200/80 hover:border-blue-200'
+                          ? 'border-[#FF7401]/50 ring-1 ring-[#FF7401]/15 bg-gradient-to-b from-orange-50/30 via-white to-white'
+                          : 'border-slate-200/80 hover:border-blue-200/80'
                       }`}
                     >
+                      <span
+                        className={`absolute inset-x-0 top-0 h-1 ${
+                          needsFollowUp
+                            ? 'bg-gradient-to-r from-[#FF7401] to-amber-300'
+                            : 'bg-gradient-to-r from-emerald-500 to-teal-300'
+                        }`}
+                        aria-hidden="true"
+                      />
                       <div className="space-y-3 min-w-0">
                         {/* Header Baris: Badge Terbaru (jika ada), Status, & Tanggal */}
                         <div className="space-y-2 pb-2.5 border-b border-slate-100 min-w-0">
@@ -1235,7 +1210,7 @@ export default function TransactionForm({
                         </div>
                       </div>
 
-                      {/* ACTION BUTTONS: DETAIL, EDIT, HAPUS */}
+                      {/* Pegawai dapat melihat dan mengedit; penghapusan hanya tersedia untuk Admin. */}
                       <div className="pt-3 mt-3 border-t border-slate-100 flex items-center gap-2 min-w-0 print:hidden">
                         {/* Tombol Detail */}
                         <button
@@ -1249,25 +1224,25 @@ export default function TransactionForm({
 
                         {/* Tombol Edit */}
                         {canManageRecord(record) && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => startEditingRecord(record)}
-                              className="flex-1 py-1.5 px-2.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-600 hover:text-white border border-amber-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
-                            >
-                              <Icon name="edit" size={13} />
-                              <span>Edit</span>
-                            </button>
+                          <button
+                            type="button"
+                            onClick={() => startEditingRecord(record)}
+                            className="flex-1 py-2 px-2.5 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/70 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap min-w-0"
+                          >
+                            <Icon name="edit" size={13} />
+                            <span>Edit</span>
+                          </button>
+                        )}
+                        {isAdminRole(user?.role) && (
                             <button
                               type="button"
                               onClick={() => handleDeleteRecord(record.id, record.fullName)}
-                              className="flex-1 py-1.5 px-2.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-600 hover:text-white border border-rose-200/60 rounded-xl transition-all shadow-2xs active:scale-95 flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap min-w-0"
+                              className="flex-1 py-2 px-2.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/70 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap min-w-0"
                               title="Hapus data ini"
                             >
                               <Icon name="trash" size={13} />
                               <span>Hapus</span>
                             </button>
-                          </>
                         )}
                       </div>
                     </div>
@@ -1559,76 +1534,6 @@ export default function TransactionForm({
                   </div>
                 )}
 
-                {/* Hubungkan laporan ke tugas tindak lanjut yang masih aktif */}
-                {(isLoadingTaskCandidates || taskCandidates.length > 0) && (
-                  <div className="space-y-2.5 rounded-2xl border border-[#014181]/15 bg-blue-50/60 p-3.5">
-                    <div className="flex items-start gap-2">
-                      <span className="mt-0.5 shrink-0 text-[#014181]">
-                        <Icon name="target" size={15} />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-[#014181]">
-                          Lanjutkan tugas tindak lanjut yang sudah ada?
-                        </p>
-                        <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500">
-                          Ditemukan tugas aktif untuk nasabah ini. Pilih tugas yang benar bila ada lebih
-                          dari satu. Laporan tetap tersimpan sebagai catatan baru.
-                        </p>
-                      </div>
-                    </div>
-
-                    {isLoadingTaskCandidates ? (
-                      <p className="text-[11px] font-semibold text-slate-500" role="status">
-                        Mencari tugas aktif nasabah ini...
-                      </p>
-                    ) : (
-                      <select
-                        name="linkedTaskId"
-                        value={form.linkedTaskId}
-                        onChange={updateField}
-                        className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#014181]/20 text-slate-800"
-                      >
-                        <option value="">Tidak terhubung — simpan sebagai laporan biasa</option>
-                        {taskCandidates.map((task) => (
-                          <option key={task.id} value={task.id}>
-                            {`${task.activity || 'Pekerjaan'} • ${task.note || 'Tanpa keterangan'} • ${formatJakartaDate(task.lastReportAt)}`}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-
-                    {linkedTask && (
-                      <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-2.5 text-[11px] text-slate-600">
-                        <p className="truncate font-bold text-[#014181]">{linkedTask.customerName}</p>
-                        <p className="truncate">
-                          Rek/NIK: <span className="font-mono">{maskIdentity(linkedTask.customerIdentity)}</span>
-                        </p>
-                        <p className="truncate">Pekerjaan: {linkedTask.activity || '-'}</p>
-                        <p className="truncate">Keterangan: {linkedTask.note || '-'}</p>
-                        <p className="truncate">Laporan terakhir: {formatJakartaDate(linkedTask.lastReportAt)}</p>
-                        {form.followUpStatus === TASK_STATUS.DONE ? (
-                          <p className="pt-0.5 font-bold text-[#B34A02]">
-                            Tugas ini akan ditutup setelah laporan disimpan.
-                          </p>
-                        ) : (
-                          <p className="pt-0.5 font-bold text-[#014181]">
-                            Keterangan dan tanggal tugas ini akan diperbarui.
-                          </p>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setForm((current) => ({ ...current, linkedTaskId: '' }))
-                          }
-                          className="mt-1 text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
-                        >
-                          Batalkan tautan
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* Row 4: Alamat Domisili */}
                 <div className="space-y-1.5">
                   <label className="block text-xs font-bold text-slate-700">
@@ -1683,7 +1588,7 @@ export default function TransactionForm({
                         <Icon name="camera" size={22} />
                       </div>
                       <p className="text-xs font-bold text-slate-700 group-hover:text-[#014181]">
-                        Pilih atau Ambil Foto Dokumentasi
+                        Pilih Foto Dokumentasi
                       </p>
                       <p className="text-[10px] text-slate-400 mt-0.5">
                         Format PNG, JPG, JPEG (otomatis dioptimalkan)
@@ -2051,17 +1956,18 @@ export default function TransactionForm({
             <div className="p-3 sm:p-4 px-4 sm:px-6 bg-slate-50/90 border-t border-slate-100 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 {canManageRecord(selectedDetailRecord) && (
-                  <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    startEditingRecord(selectedDetailRecord);
-                  }}
-                  className="px-3.5 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center gap-1"
-                >
-                  <Icon name="edit" size={13} />
-                  <span>Edit Data</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      startEditingRecord(selectedDetailRecord);
+                    }}
+                    className="px-3.5 py-2 text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Icon name="edit" size={13} />
+                    <span>Edit Data</span>
+                  </button>
+                )}
+                {isAdminRole(user?.role) && (
                 <button
                   type="button"
                   onClick={() =>
@@ -2075,7 +1981,6 @@ export default function TransactionForm({
                   <Icon name="trash" size={13} />
                   <span>Hapus</span>
                 </button>
-                  </>
                 )}
               </div>
 

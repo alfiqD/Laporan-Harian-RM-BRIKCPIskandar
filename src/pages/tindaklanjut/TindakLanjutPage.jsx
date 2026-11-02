@@ -7,11 +7,12 @@ import { isAdminRole } from '../../config/rolesConfig.jsx';
 import {
   fetchTaskHistory,
   fetchTasks,
+  deleteTaskAndReports,
   formatJakartaDate,
   formatJakartaDateTime,
   maskIdentity,
   TASK_STATUS,
-  TASK_STATUS_LABEL,
+  TASK_STATUS_LABEL,   
 } from '../../services/tindakLanjut.js';
 
 const FORM_TYPE_LABEL = {
@@ -73,6 +74,7 @@ export default function TindakLanjutPage({ user, onBack, onLogout, onUpdateUser 
   const [history, setHistory] = useState([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [deletingTaskId, setDeletingTaskId] = useState('');
 
   const loadTasks = useCallback(async () => {
     if (!user?.id) return;
@@ -154,6 +156,37 @@ export default function TindakLanjutPage({ user, onBack, onLogout, onUpdateUser 
     }
     setHistory(data || []);
     setIsLoadingHistory(false);
+  };
+
+  const handleDeleteTask = async (task) => {
+    const confirmed = window.confirm(
+      `Hapus tugas tindak lanjut untuk ${task.customerName} beserta semua laporan terkait dan riwayatnya secara permanen? Tindakan ini tidak dapat dibatalkan.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingTaskId(task.id);
+    try {
+      const { deletedReportCount, error } = await deleteTaskAndReports(task.id);
+      if (error) {
+        console.error('Gagal menghapus tugas tindak lanjut:', error);
+        setNotice('Data gagal dihapus. Periksa koneksi, hak akses, dan migration database.');
+        return;
+      }
+
+      setTasksByStatus((current) => ({
+        pending: current.pending.filter((item) => item.id !== task.id),
+        done: current.done.filter((item) => item.id !== task.id),
+      }));
+      if (detailTask?.id === task.id) setDetailTask(null);
+      setNotice(
+        `Tugas berhasil dihapus bersama ${deletedReportCount} laporan terkait dan riwayatnya.`,
+      );
+    } catch (error) {
+      console.error('Gagal menghapus tugas tindak lanjut:', error);
+      setNotice('Data gagal dihapus karena terjadi kesalahan. Silakan coba lagi.');
+    } finally {
+      setDeletingTaskId('');
+    }
   };
 
   return (
@@ -402,6 +435,16 @@ export default function TindakLanjutPage({ user, onBack, onLogout, onUpdateUser 
                         >
                           <Icon name="clipboard" size={13} />
                           Riwayat Tugas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTask(task)}
+                          disabled={deletingTaskId === task.id}
+                          aria-label={`Hapus tugas ${task.customerName}`}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60 sm:flex-initial"
+                        >
+                          <Icon name="trash" size={13} />
+                          {deletingTaskId === task.id ? 'Menghapus...' : 'Hapus'}
                         </button>
                       </div>
                     </div>
