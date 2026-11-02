@@ -13,14 +13,14 @@ import { countActiveTasks } from '../../services/tindakLanjut.js';
 
 const menuItems = [
   {
-    label: 'RMFT',
+    label: 'RELATIONSHIP MANAGER FUNDING & TRANSACTION (RMFT)',
     description: 'Buat dan kelola laporan Funding & Transaksi.',
     icon: 'creditCard',
     page: 'rmft',
     reportPage: 'rmft?view=reports',
   },
   {
-    label: 'RM Kredit',
+    label: 'RELATIONSHIP MANAGER KREDIT (RMKREDIT)',
     description: 'Buat dan kelola laporan layanan kredit.',
     icon: 'chart',
     page: 'rmkredit',
