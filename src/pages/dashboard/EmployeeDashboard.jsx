@@ -96,7 +96,7 @@ export default function EmployeeDashboard({ user, onLogout, onUpdateUser, onNavi
           }}
         />
 
-        <div className="mx-auto max-w-4xl space-y-5 px-3.5 pt-4 sm:px-6 sm:pt-6">
+        <div className="mx-auto w-full max-w-6xl space-y-5 px-4 pt-4 sm:px-8 sm:pt-6">
           <section className="relative overflow-hidden rounded-2xl border border-blue-900/30 bg-gradient-to-br from-[#014181] via-[#002D5B] to-[#001D3D] p-5 text-white shadow-lg sm:rounded-3xl sm:p-7">
             <div className="pointer-events-none absolute -right-12 -top-16 h-48 w-48 rounded-full bg-[#FF7401]/25 blur-3xl" />
             <p className="relative text-[10px] font-bold uppercase tracking-[0.18em] text-orange-300">Dashboard Pegawai</p>

@@ -719,7 +719,13 @@ export default function TransactionForm({
         {/* Top Navbar Header */}
         <header className="sticky top-0 z-30 w-full backdrop-blur-md bg-white/90 border-b border-slate-200/70 shadow-xs transition-all duration-300 print:hidden">
           <div className="h-1 bg-[#FF7401] w-full" />
-          <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2">
+          <div
+            className={`${
+              viewMode === 'reports'
+                ? 'mx-auto w-full max-w-7xl px-4 sm:px-8'
+                : 'max-w-4xl mx-auto px-3.5 sm:px-6'
+            } py-2.5 sm:py-3 flex items-center justify-between gap-2`}
+          >
             {/* Tombol Kembali / Navigasi View */}
             {viewMode === 'reports' ? (
               <button
@@ -816,7 +822,7 @@ export default function TransactionForm({
             TAMPILAN 1: HALAMAN LAPORAN DALAM BENTUK CARD (viewMode === 'reports')
             ============================================================ */}
         {viewMode === 'reports' ? (
-          <div className="max-w-6xl mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 space-y-4 sm:space-y-5 animate-in fade-in duration-300">
+          <div className="mx-auto w-full max-w-7xl px-4 sm:px-8 pt-4 sm:pt-6 space-y-4 sm:space-y-5 animate-in fade-in duration-300">
             {/* Hero Banner Laporan */}
             <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden bg-gradient-to-br from-[#014181] via-[#002D5B] to-[#001D3D] text-white p-5 sm:p-7 shadow-[0_20px_50px_-15px_rgba(1,65,129,0.5)] border border-blue-900/30">
               <div className="absolute -top-16 -right-16 w-56 h-56 bg-[#FF7401]/25 rounded-full blur-3xl pointer-events-none" />
@@ -1049,7 +1055,7 @@ export default function TransactionForm({
                 Memuat laporan...
               </p>
             ) : filteredRecords.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 items-stretch">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5 gap-4 items-stretch">
                 {filteredRecords.map((record, index) => {
                   const needsFollowUp = normalizeFollowUpStatus(record.followUpStatus) === 'pending';
                   const isNewest = index === 0 && !searchTerm && statusFilter === 'ALL'
@@ -1280,7 +1286,7 @@ export default function TransactionForm({
           /* ============================================================
               TAMPILAN 2: HALAMAN FORMULIR INPUT TRANSAKSI (viewMode === 'form')
               ============================================================ */
-          <div className="max-w-4xl mx-auto px-3.5 sm:px-6 pt-3 sm:pt-5 space-y-4 sm:space-y-6 animate-in fade-in duration-300">
+          <div className="mx-auto w-full max-w-5xl px-4 sm:px-8 pt-3 sm:pt-5 space-y-4 sm:space-y-6 animate-in fade-in duration-300">
             {/* Hero Executive Banner */}
             <section className="relative rounded-2xl sm:rounded-3xl overflow-hidden bg-gradient-to-br from-[#014181] via-[#002D5B] to-[#001D3D] text-white p-5 sm:p-7 shadow-[0_20px_50px_-15px_rgba(1,65,129,0.5)] border border-blue-900/30">
               <div className="absolute -top-16 -right-16 w-56 h-56 bg-[#FF7401]/25 rounded-full blur-3xl pointer-events-none" />

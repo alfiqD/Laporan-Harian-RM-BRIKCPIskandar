@@ -24,7 +24,7 @@ export default function Navbar({ user, onLogout, onOpenProfile }) {
       <div className="h-1 bg-[#FF7401] w-full" />
 
       {/* Container Header Menyatu Tanpa Bar Putih Kaku */}
-      <div className="max-w-4xl mx-auto px-3.5 sm:px-6 py-3 flex items-center justify-between">
+      <div className="mx-auto w-full max-w-6xl px-4 sm:px-8 py-3 flex items-center justify-between">
         {/* Logo Bank BRI Pill */}
         <Link
           to="/"
